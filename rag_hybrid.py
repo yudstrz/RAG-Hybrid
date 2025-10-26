@@ -1,730 +1,260 @@
-"""
-rag_hybrid_streamlit.py
-RAG Hybrid dengan Streamlit UI - Pilih sistem RAG yang ingin digunakan
-"""
-
+# ==========================
+# 🚀 RAG SYSTEM STREAMLIT FIXED VERSION
+# ==========================
 import os
-import json
 import time
-from typing import List, Dict, Any, Optional
-
-import streamlit as st
 import requests
+import tempfile
+import numpy as np
+import pandas as pd
+import streamlit as st
+from typing import List, Dict, Any
+from sentence_transformers import SentenceTransformer, util
 from duckduckgo_search import DDGS
 from sqlalchemy import create_engine, text
-from sentence_transformers import SentenceTransformer
 import chromadb
-import numpy as np
+from chromadb.config import Settings
 
-# Document loaders - manual implementation
-import pypdf
-import docx2txt
-from pptx import Presentation
+# ==========================
+# 🧩 Embedding Model
+# ==========================
+EMBED_MODEL = SentenceTransformer("all-MiniLM-L6-v2")
 
-# ---------------------------
-# Helper: LLM client (Multiple providers)
-# ---------------------------
-class OllamaClient:
-    def __init__(self, host: str = "http://localhost:11434", provider: str = "ollama"):
-        self.base = host.rstrip("/")
-        self.provider = provider
-        self.api_key = None
+# ==========================
+# 📚 Base Retriever Class
+# ==========================
+class BaseRetriever:
+    def retrieve(self, query: str) -> List[str]:
+        raise NotImplementedError
 
-    def set_api_key(self, api_key: str):
-        self.api_key = api_key
-
-    def generate(self, model: str, prompt: str, max_tokens: int = 512, temperature: float = 0.0) -> str:
-        try:
-            if self.provider == "ollama":
-                return self._ollama_generate(model, prompt, max_tokens, temperature)
-            elif self.provider == "openai":
-                return self._openai_generate(model, prompt, max_tokens, temperature)
-            elif self.provider == "groq":
-                return self._groq_generate(model, prompt, max_tokens, temperature)
-            else:
-                return self._simple_answer(prompt)
-        except Exception as e:
-            return f"Error: {str(e)}"
-
-    def _ollama_generate(self, model: str, prompt: str, max_tokens: int, temperature: float) -> str:
-        url = f"{self.base}/api/generate"
-        payload = {
-            "model": model,
-            "prompt": prompt,
-            "stream": False,
-            "options": {
-                "num_predict": max_tokens,
-                "temperature": temperature
-            }
-        }
-        resp = requests.post(url, json=payload, timeout=120)
-        resp.raise_for_status()
-        data = resp.json()
-        return data.get("response", "").strip()
-
-    def _openai_generate(self, model: str, prompt: str, max_tokens: int, temperature: float) -> str:
-        if not self.api_key:
-            raise ValueError("OpenAI API key required")
-        url = "https://api.openai.com/v1/chat/completions"
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json"
-        }
-        payload = {
-            "model": model,
-            "messages": [{"role": "user", "content": prompt}],
-            "max_tokens": max_tokens,
-            "temperature": temperature
-        }
-        resp = requests.post(url, json=headers, timeout=120)
-        resp.raise_for_status()
-        return resp.json()["choices"][0]["message"]["content"]
-
-    def _groq_generate(self, model: str, prompt: str, max_tokens: int, temperature: float) -> str:
-        if not self.api_key:
-            raise ValueError("Groq API key required")
-        url = "https://api.groq.com/openai/v1/chat/completions"
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json"
-        }
-        payload = {
-            "model": model,
-            "messages": [{"role": "user", "content": prompt}],
-            "max_tokens": max_tokens,
-            "temperature": temperature
-        }
-        resp = requests.post(url, json=payload, headers=headers, timeout=120)
-        resp.raise_for_status()
-        return resp.json()["choices"][0]["message"]["content"]
-
-    def _simple_answer(self, prompt: str) -> str:
-        """Fallback: simple rule-based answer from context"""
-        if "KONTEKS:" in prompt and "PERTANYAAN:" in prompt:
-            parts = prompt.split("PERTANYAAN:")
-            if len(parts) > 1:
-                context_part = parts[0].split("KONTEKS:")[1].strip()
-                question = parts[1].replace("JAWABAN:", "").strip()
-                
-                if context_part and len(context_part) > 50:
-                    return f"Berdasarkan konteks yang tersedia:\n\n{context_part[:500]}...\n\nUntuk jawaban yang lebih detail, mohon konfigurasikan API key atau jalankan Ollama lokal."
-                else:
-                    return "Konteks tidak tersedia. Mohon upload dokumen atau aktifkan web search untuk mendapatkan informasi."
-        return "Mohon konfigurasikan LLM provider (Ollama, OpenAI, atau Groq) untuk mendapatkan jawaban."
-
-# ---------------------------
-# Retriever: Documents (PDF, DOCX, PPTX)
-# ---------------------------
-class DocumentRetriever:
-    def __init__(self, model_name: str = "all-MiniLM-L6-v2"):
-        self.embedder = SentenceTransformer(model_name)
-        self.store = []
-
-    def load_files(self, file_paths: List[str]):
-        texts = []
-        for f in file_paths:
+# ==========================
+# 📄 Document Retriever
+# ==========================
+class DocumentRetriever(BaseRetriever):
+    def __init__(self, paths: List[str]):
+        self.docs = []
+        for p in paths:
+            ext = p.lower().split(".")[-1]
             try:
-                if f.lower().endswith(".pdf"):
-                    # Manual PDF loading
-                    with open(f, 'rb') as pdf_file:
-                        pdf_reader = pypdf.PdfReader(pdf_file)
-                        for page in pdf_reader.pages:
-                            text = page.extract_text()
-                            if text:
-                                texts.append(text)
-                                
-                elif f.lower().endswith(".docx"):
-                    # DOCX loading
-                    text = docx2txt.process(f)
-                    if text:
-                        texts.append(text)
-                        
-                elif f.lower().endswith(".pptx"):
-                    # PPTX loading
-                    prs = Presentation(f)
-                    slide_texts = []
+                if ext == "pdf":
+                    from PyPDF2 import PdfReader
+                    reader = PdfReader(p)
+                    self.docs.extend([p.extract_text() for p in reader.pages])
+                elif ext in ["doc", "docx"]:
+                    import docx2txt
+                    self.docs.append(docx2txt.process(p))
+                elif ext in ["ppt", "pptx"]:
+                    from pptx import Presentation
+                    prs = Presentation(p)
+                    text_runs = []
                     for slide in prs.slides:
                         for shape in slide.shapes:
                             if hasattr(shape, "text"):
-                                slide_texts.append(shape.text)
-                    if slide_texts:
-                        texts.append("\n".join(slide_texts))
-                else:
-                    with open(f, "r", encoding="utf-8", errors="ignore") as fh:
-                        texts.append(fh.read())
+                                text_runs.append(shape.text)
+                    self.docs.append(" ".join(text_runs))
+                elif ext in ["txt", "md"]:
+                    with open(p, "r", encoding="utf-8") as f:
+                        self.docs.append(f.read())
             except Exception as e:
-                st.warning(f"Error loading {f}: {str(e)}")
+                st.warning(f"Gagal memuat dokumen {p}: {e}")
 
-        for t in texts:
-            chunks = [p.strip() for p in t.split("\n\n") if p.strip()]
-            for c in chunks:
-                emb = self.embedder.encode(c)
-                self.store.append({"text": c, "emb": emb})
-
-    def retrieve(self, query: str, k: int = 3):
-        if not self.store:
+    def retrieve(self, query: str) -> List[str]:
+        if not self.docs:
             return []
-        q_emb = self.embedder.encode(query)
-        sims = []
-        for item in self.store:
-            v = item["emb"]
-            sim = np.dot(q_emb, v) / (np.linalg.norm(q_emb) * np.linalg.norm(v) + 1e-10)
-            sims.append(sim)
-        idx = sorted(range(len(sims)), key=lambda i: sims[i], reverse=True)[:k]
-        return [self.store[i]["text"] for i in idx]
+        query_emb = EMBED_MODEL.encode(query, convert_to_tensor=True)
+        docs_emb = EMBED_MODEL.encode(self.docs, convert_to_tensor=True)
+        scores = util.cos_sim(query_emb, docs_emb)[0]
+        topk = min(3, len(self.docs))
+        best_idx = np.argsort(scores)[-topk:][::-1]
+        return [self.docs[i] for i in best_idx]
 
-# ---------------------------
-# Retriever: Web (DuckDuckGo with retry)
-# ---------------------------
-class WebRetriever:
-    def __init__(self):
-        self.last_search_time = 0
-        self.min_delay = 2  # seconds between searches
+# ==========================
+# 🌐 Web Search Retriever
+# ==========================
+class WebSearchRetriever(BaseRetriever):
+    def __init__(self, max_results=3, min_delay=2):
+        self.max_results = max_results
+        self.min_delay = min_delay
+        self.ddgs = DDGS()
 
-    def search(self, query: str, n: int = 3) -> List[str]:
-        texts = []
-        
-        # Rate limiting
-        time_since_last = time.time() - self.last_search_time
-        if time_since_last < self.min_delay:
-            time.sleep(self.min_delay - time_since_last)
-        
+    def retrieve(self, query: str) -> List[str]:
+        time.sleep(self.min_delay)
         try:
-            with DDGS() as ddgs:
-                results = list(ddgs.text(query, max_results=n))
-                for r in results:
-                    body = r.get("body", "")
-                    title = r.get("title", "")
-                    snippet = f"**{title}**\n{body}".strip()
-                    if snippet:
-                        texts.append(snippet)
-            self.last_search_time = time.time()
+            results = list(self.ddgs.text(query, max_results=self.max_results))
+            return [r["body"] for r in results if "body" in r]
         except Exception as e:
-            error_msg = str(e)
-            if "ratelimit" in error_msg.lower() or "202" in error_msg:
-                st.warning("⚠️ Web search rate limited. Coba lagi setelah beberapa detik.")
-            else:
-                st.warning(f"Web search error: {error_msg}")
-        
-        return texts
+            st.warning(f"Gagal melakukan pencarian web: {e}")
+            return []
 
-# ---------------------------
-# Retriever: SQL (SQLAlchemy)
-# ---------------------------
-class SQLRetriever:
-    def __init__(self, connection_string: str):
-        self.engine = create_engine(connection_string)
+# ==========================
+# 🗄️ SQL Retriever
+# ==========================
+class SQLRetriever(BaseRetriever):
+    def __init__(self, connection_str: str, table: str):
+        self.engine = create_engine(connection_str)
+        self.table = table
 
-    def query(self, sql: str, limit: int = 5) -> List[str]:
+    def retrieve(self, query: str) -> List[str]:
         try:
             with self.engine.connect() as conn:
-                result = conn.execute(text(sql))
-                rows = result.fetchall()
-                return [str(dict(row._mapping)) for row in rows[:limit]]
+                q = text(f"SELECT * FROM {self.table} WHERE content LIKE :kw LIMIT 3")
+                rows = conn.execute(q, {"kw": f"%{query}%"}).fetchall()
+                return [str(r) for r in rows]
         except Exception as e:
-            return [f"SQL Error: {str(e)}"]
-
-# ---------------------------
-# Retriever: Generic API Client
-# ---------------------------
-class APIClientRetriever:
-    def fetch_json(self, url: str, params: dict = None) -> str:
-        try:
-            r = requests.get(url, params=params, timeout=20)
-            r.raise_for_status()
-            return json.dumps(r.json())[:5000]
-        except Exception as e:
-            return f"API Error: {str(e)}"
-
-# ---------------------------
-# Retriever: Transcript
-# ---------------------------
-class TranscriptRetriever:
-    def __init__(self):
-        self.transcripts = []
-
-    def add_transcript(self, text: str, meta: Optional[dict] = None):
-        self.transcripts.append({"text": text, "meta": meta or {}})
-
-    def retrieve(self, query: str, k: int = 3) -> List[str]:
-        if not self.transcripts:
+            st.warning(f"SQL retrieval error: {e}")
             return []
-        scored = []
-        q = query.lower()
-        for t in self.transcripts:
-            score = sum(1 for w in q.split() if w in t["text"].lower())
-            scored.append((score, t["text"]))
-        top = sorted(scored, key=lambda x: x[0], reverse=True)[:k]
-        return [s for _, s in top]
 
-# ---------------------------
-# Retriever: VectorStore (Chroma)
-# ---------------------------
-class VectorStoreRetriever:
-    def __init__(self):
-        self.client = None
-        self.col = None
-        self.enabled = False
-        self._initialize()
-    
-    def _initialize(self):
+# ==========================
+# 🧠 Vector Store Retriever
+# ==========================
+class VectorStoreRetriever(BaseRetriever):
+    def __init__(self, collection_name="rag_collection"):
         try:
-            # Use ephemeral client for Streamlit Cloud
-            from chromadb.config import Settings
-            self.client = chromadb.Client(Settings(
-                is_persistent=False,
-                anonymized_telemetry=False
-            ))
-            self.col = self.client.get_or_create_collection("rag_collection")
-            self.enabled = True
+            self.client = chromadb.Client(Settings(anonymized_telemetry=False))
+            self.collection = self.client.get_or_create_collection(collection_name)
         except Exception as e:
-            st.warning(f"ChromaDB not available: {str(e)}")
-            self.enabled = False
+            st.warning(f"Gagal inisialisasi ChromaDB: {e}")
+            self.collection = None
 
-    def add_texts(self, texts: List[str], ids: Optional[List[str]] = None):
-        if not self.enabled or not texts:
+    def add(self, docs: List[str]):
+        if not self.collection:
             return
+        embeddings = EMBED_MODEL.encode(docs).tolist()
+        ids = [str(i) for i in range(len(docs))]
         try:
-            ids = ids or [str(time.time()) + "_" + str(i) for i in range(len(texts))]
-            self.col.add(ids=ids, documents=texts)
+            self.collection.add(ids=ids, embeddings=embeddings, documents=docs)
         except Exception as e:
-            st.warning(f"Error adding to vector store: {str(e)}")
+            st.warning(f"Vector add error: {e}")
 
-    def retrieve(self, query: str, k: int = 3) -> List[str]:
-        if not self.enabled:
+    def retrieve(self, query: str) -> List[str]:
+        if not self.collection:
             return []
+        query_emb = EMBED_MODEL.encode([query]).tolist()
         try:
-            res = self.col.query(query_texts=[query], n_results=k)
-            docs = []
-            for rr in res["documents"]:
-                docs.extend(rr)
-            return docs[:k]
-        except Exception:
+            results = self.collection.query(query_embeddings=query_emb, n_results=3)
+            return results.get("documents", [[]])[0]
+        except Exception as e:
+            st.warning(f"Vector retrieval error: {e}")
             return []
 
-# ---------------------------
-# Retriever: Knowledge Graph (stub)
-# ---------------------------
-class KnowledgeGraphRetriever:
-    def __init__(self):
-        self.triples = []
-
-    def add_triple(self, s, p, o):
-        self.triples.append((s, p, o))
-
-    def query(self, query_text: str) -> List[str]:
-        return [str(t) for t in self.triples if query_text.lower() in " ".join(map(str, t)).lower()]
-
-# ---------------------------
-# Retriever: IoT (stub)
-# ---------------------------
-class IoTRetriever:
-    def get_latest(self, device_id: str) -> str:
-        return f"Latest data for {device_id}: temperature=28.5C, status=ok"
-
-# ---------------------------
-# User History
-# ---------------------------
-class UserHistory:
-    def __init__(self):
-        self.history = []
-
-    def add(self, user: str, query: str, answer: str):
-        self.history.append({"user": user, "query": query, "answer": answer, "ts": time.time()})
-
-    def get_recent(self, user: str, k: int = 5) -> List[str]:
-        return [h["query"] + " -> " + h["answer"] for h in self.history if h["user"] == user][-k:]
-
-# ---------------------------
-# Orchestrator
-# ---------------------------
-class RAGOrchestrator:
-    def __init__(self, ollama_host="http://localhost:11434", model="llama3.1:8b", provider="ollama"):
-        self.ollama = OllamaClient(ollama_host, provider)
-        self.model = model
+# ==========================
+# ⚙️ RAG System (Multi-Source)
+# ==========================
+class RAGSystem:
+    def __init__(self, retrievers: Dict[str, BaseRetriever], provider="ollama", model="llama3.1"):
+        self.retrievers = retrievers
         self.provider = provider
-        
-        # Initialize retrievers with error handling
-        try:
-            self.doc_retriever = DocumentRetriever()
-        except Exception as e:
-            st.warning(f"Document retriever initialization failed: {str(e)}")
-            self.doc_retriever = None
-            
-        try:
-            self.web = WebRetriever()
-        except Exception as e:
-            st.warning(f"Web retriever initialization failed: {str(e)}")
-            self.web = None
-            
-        self.sql = None  # Initialize on demand
-        
-        try:
-            self.api = APIClientRetriever()
-        except Exception as e:
-            st.warning(f"API retriever initialization failed: {str(e)}")
-            self.api = None
-            
-        try:
-            self.transcripts = TranscriptRetriever()
-        except Exception as e:
-            st.warning(f"Transcript retriever initialization failed: {str(e)}")
-            self.transcripts = None
-            
-        try:
-            self.vector = VectorStoreRetriever()
-        except Exception as e:
-            st.warning(f"Vector store initialization failed: {str(e)}")
-            self.vector = None
-            
-        try:
-            self.kg = KnowledgeGraphRetriever()
-        except Exception as e:
-            st.warning(f"Knowledge graph initialization failed: {str(e)}")
-            self.kg = None
-            
-        try:
-            self.iot = IoTRetriever()
-        except Exception as e:
-            st.warning(f"IoT retriever initialization failed: {str(e)}")
-            self.iot = None
-            
-        try:
-            self.history = UserHistory()
-        except Exception as e:
-            st.warning(f"User history initialization failed: {str(e)}")
-            self.history = UserHistory()  # This should always work
+        self.model = model
 
-    def set_sql(self, connection_string: str):
-        self.sql = SQLRetriever(connection_string)
-
-    def gather_context(self, query: str, sources: List[str], k_each: int = 3) -> str:
-        contexts = []
-        
-        if "doc" in sources and self.doc_retriever:
-            try:
-                contexts += self.doc_retriever.retrieve(query, k=k_each)
-            except Exception as e:
-                st.warning(f"Doc retrieval error: {str(e)}")
-                
-        if "web" in sources and self.web:
-            try:
-                contexts += self.web.search(query, n=k_each)
-            except Exception as e:
-                st.warning(f"Web search error: {str(e)}")
-                
-        if "sql" in sources and self.sql:
-            try:
-                contexts += self.sql.query(query)
-            except Exception as e:
-                st.warning(f"SQL query error: {str(e)}")
-                
-        if "vector" in sources and self.vector and self.vector.enabled:
-            try:
-                contexts += self.vector.retrieve(query, k=k_each)
-            except Exception as e:
-                st.warning(f"Vector retrieval error: {str(e)}")
-                
-        if "transcript" in sources and self.transcripts:
-            try:
-                contexts += self.transcripts.retrieve(query, k=k_each)
-            except Exception as e:
-                st.warning(f"Transcript retrieval error: {str(e)}")
-                
-        if "kg" in sources and self.kg:
-            try:
-                contexts += self.kg.query(query)
-            except Exception as e:
-                st.warning(f"Knowledge graph query error: {str(e)}")
-                
-        if "iot" in sources and self.iot:
-            try:
-                contexts.append(self.iot.get_latest(device_id="device123"))
-            except Exception as e:
-                st.warning(f"IoT retrieval error: {str(e)}")
-                
-        if "api" in sources and self.api:
-            try:
-                # Example API call - customize as needed
-                pass
-            except Exception as e:
-                st.warning(f"API call error: {str(e)}")
-        
-        seen = set()
-        final_ctx = []
-        for c in contexts:
-            if not c:
-                continue
-            s = c.strip()
-            if s in seen:
-                continue
-            seen.add(s)
-            final_ctx.append(s)
-            if len(final_ctx) >= 10:
-                break
-        
-        return "\n\n---\n\n".join(final_ctx)
-
-    def answer(self, user: str, query: str, sources: List[str]) -> str:
-        ctx = self.gather_context(query, sources)
-        prompt = f"""Kamu adalah asisten yang menjawab berdasarkan konteks. Gunakan konteks di bawah ini (jika ada) lalu jawab pertanyaan dengan singkat dan jelas.
-
-KONTEKS:
-{ctx}
-
-PERTANYAAN:
-{query}
-
-JAWABAN:"""
-        answer = self.ollama.generate(self.model, prompt, max_tokens=512, temperature=0.0)
-        self.history.add(user, query, answer)
-        return answer
-
-# ---------------------------
-# Streamlit App
-# ---------------------------
-def main():
-    st.set_page_config(page_title="RAG Hybrid System", page_icon="🤖", layout="wide")
-    
-    st.title("🤖 RAG Hybrid System")
-    st.markdown("Pilih sistem RAG yang ingin digunakan untuk menjawab pertanyaan Anda")
-    
-    # Info box
-    st.info("""
-    💡 **Tips Penggunaan:**
-    - **Simple Mode**: Tidak perlu API, hanya menampilkan konteks yang ditemukan
-    - **Ollama**: Untuk lokal (harus install Ollama di komputer)
-    - **OpenAI/Groq**: Untuk cloud API (butuh API key)
-    - **Web Search**: Akan di-rate limit jika terlalu sering, tunggu beberapa detik
-    """)
-    
-    # Initialize session state
-    if 'orchestrator' not in st.session_state:
-        st.session_state.orchestrator = RAGOrchestrator()
-    
-    orch = st.session_state.orchestrator
-    
-    # Sidebar: Configuration
-    with st.sidebar:
-        st.header("⚙️ Konfigurasi")
-        
-        # LLM Provider selection
-        st.subheader("🤖 LLM Provider")
-        provider = st.selectbox(
-            "Pilih Provider",
-            ["simple", "ollama", "openai", "groq"],
-            help="simple = rule-based (no API needed)"
-        )
-        
-        if provider == "ollama":
-            ollama_host = st.text_input("Ollama Host", value="http://localhost:11434")
-            model_name = st.text_input("Model Name", value="llama3.1:8b")
-            api_key = None
-        elif provider == "openai":
-            api_key = st.text_input("OpenAI API Key", type="password")
-            model_name = st.selectbox("Model", ["gpt-4o-mini", "gpt-4o", "gpt-3.5-turbo"])
-            ollama_host = None
-        elif provider == "groq":
-            api_key = st.text_input("Groq API Key", type="password")
-            model_name = st.selectbox("Model", ["llama-3.3-70b-versatile", "mixtral-8x7b-32768"])
-            ollama_host = None
-        else:  # simple
-            api_key = None
-            model_name = "simple"
-            ollama_host = None
-        
-        if st.button("Update LLM Config"):
-            if provider in ["openai", "groq"] and not api_key:
-                st.error("API Key required!")
-            else:
-                host = ollama_host if ollama_host else "http://localhost:11434"
-                st.session_state.orchestrator = RAGOrchestrator(host, model_name, provider)
-                if api_key:
-                    st.session_state.orchestrator.ollama.set_api_key(api_key)
-                st.success("Configuration updated!")
-        
-        st.divider()
-        
-        # Document upload
-        st.subheader("📄 Upload Documents")
-        uploaded_files = st.file_uploader(
-            "Upload PDF, DOCX, atau PPTX",
-            type=["pdf", "docx", "pptx"],
-            accept_multiple_files=True
-        )
-        
-        if uploaded_files:
-            if st.button("Process Documents"):
-                with st.spinner("Processing documents..."):
-                    temp_paths = []
-                    for uf in uploaded_files:
-                        temp_path = f"temp_{uf.name}"
-                        with open(temp_path, "wb") as f:
-                            f.write(uf.read())
-                        temp_paths.append(temp_path)
-                    
-                    orch.doc_retriever.load_files(temp_paths)
-                    
-                    # Cleanup
-                    for tp in temp_paths:
-                        os.remove(tp)
-                    
-                    st.success(f"Processed {len(uploaded_files)} documents!")
-        
-        st.divider()
-        
-        # Add vector data
-        st.subheader("📊 Add Vector Data")
-        vector_text = st.text_area("Enter text to add to vector store")
-        if st.button("Add to Vector Store"):
-            if vector_text:
-                orch.vector.add_texts([vector_text])
-                st.success("Added to vector store!")
-        
-        st.divider()
-        
-        # Add transcript
-        st.subheader("🎤 Add Transcript")
-        transcript_text = st.text_area("Enter transcript text")
-        if st.button("Add Transcript"):
-            if transcript_text:
-                orch.transcripts.add_transcript(transcript_text)
-                st.success("Transcript added!")
-        
-        st.divider()
-        
-        # SQL Configuration
-        st.subheader("🗄️ SQL Database")
-        sql_conn = st.text_input("SQL Connection String", value="sqlite:///mydb.db")
-        if st.button("Connect to Database"):
-            try:
-                orch.set_sql(sql_conn)
-                st.success("Connected to database!")
-            except Exception as e:
-                st.error(f"Error: {str(e)}")
-        
-        st.divider()
-        
-        # Knowledge Graph
-        st.subheader("🕸️ Knowledge Graph")
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            kg_subject = st.text_input("Subject", key="kg_s")
-        with col2:
-            kg_predicate = st.text_input("Predicate", key="kg_p")
-        with col3:
-            kg_object = st.text_input("Object", key="kg_o")
-        
-        if st.button("Add Triple"):
-            if kg_subject and kg_predicate and kg_object:
-                orch.kg.add_triple(kg_subject, kg_predicate, kg_object)
-                st.success("Triple added!")
-    
-    # Main area: RAG System Selection
-    st.header("🔍 Pilih Sistem RAG")
-    
-    # Show retriever status
-    with st.expander("📊 Status Sistem RAG"):
-        col1, col2 = st.columns(2)
-        with col1:
-            st.write("✅ Document Retriever:", "Active" if orch.doc_retriever else "❌ Inactive")
-            st.write("✅ Web Search:", "Active" if orch.web else "❌ Inactive")
-            st.write("✅ SQL Database:", "Active" if orch.sql else "❌ Not configured")
-            st.write("✅ API Client:", "Active" if orch.api else "❌ Inactive")
-            st.write("✅ Transcript:", "Active" if orch.transcripts else "❌ Inactive")
-        with col2:
-            vector_status = "Active" if (orch.vector and orch.vector.enabled) else "❌ Inactive"
-            st.write("✅ Vector Store:", vector_status)
-            st.write("✅ Knowledge Graph:", "Active" if orch.kg else "❌ Inactive")
-            st.write("✅ IoT Retriever:", "Active" if orch.iot else "❌ Inactive")
-            st.write("✅ User History:", "Active" if orch.history else "❌ Inactive")
-    
-    # Create columns for checkboxes
-    col1, col2 = st.columns(2)
-    
-    rag_systems = {
-        "doc": "📄 Document Retriever (PDF/DOCX/PPTX)",
-        "web": "🌐 Web Search (DuckDuckGo)",
-        "sql": "🗄️ SQL Database",
-        "api": "🔌 API Client",
-        "transcript": "🎤 Transcript Retriever",
-        "vector": "📊 Vector Store (Chroma)",
-        "kg": "🕸️ Knowledge Graph",
-        "iot": "📡 IoT Retriever",
-        "history": "📜 User History",
-        "all": "✨ All Systems"
-    }
-    
-    selected_systems = []
-    
-    with col1:
-        for key in list(rag_systems.keys())[:5]:
-            if st.checkbox(rag_systems[key], key=f"check_{key}"):
-                selected_systems.append(key)
-    
-    with col2:
-        for key in list(rag_systems.keys())[5:]:
-            if st.checkbox(rag_systems[key], key=f"check_{key}"):
-                selected_systems.append(key)
-    
-    # Handle "all" selection
-    if "all" in selected_systems:
-        selected_systems = ["doc", "web", "sql", "api", "transcript", "vector", "kg", "iot"]
-    
-    st.divider()
-    
-    # Query section
-    st.header("💬 Tanya Sistem RAG")
-    
-    user_name = st.text_input("Nama User", value="wahyu")
-    query = st.text_area("Masukkan pertanyaan Anda:", height=100)
-    
-    col1, col2, col3 = st.columns([1, 1, 3])
-    with col1:
-        k_results = st.number_input("Results per source", min_value=1, max_value=10, value=3)
-    with col2:
-        ask_button = st.button("🚀 Tanya", type="primary", use_container_width=True)
-    
-    if ask_button and query:
-        if not selected_systems:
-            st.warning("⚠️ Pilih minimal satu sistem RAG!")
+    def _generate(self, prompt: str) -> str:
+        if self.provider == "ollama":
+            return self._ollama_generate(prompt)
+        elif self.provider == "openai":
+            return self._openai_generate(prompt)
+        elif self.provider == "groq":
+            return self._groq_generate(prompt)
         else:
-            with st.spinner("Mengumpulkan konteks dan menjawab..."):
-                try:
-                    # Show selected systems
-                    st.info(f"Menggunakan: {', '.join([rag_systems[s].split(' ')[1] for s in selected_systems])}")
-                    
-                    # Get answer
-                    answer = orch.answer(user_name, query, selected_systems)
-                    
-                    # Display answer
-                    st.subheader("📝 Jawaban:")
-                    st.markdown(answer)
-                    
-                    # Show context sources
-                    with st.expander("🔍 Lihat Konteks yang Digunakan"):
-                        ctx = orch.gather_context(query, selected_systems, k_each=k_results)
-                        st.text(ctx)
-                    
-                except Exception as e:
-                    st.error(f"Error: {str(e)}")
-    
-    # History section
-    st.divider()
-    st.header("📜 Riwayat Percakapan")
-    
-    if orch.history.history:
-        history_df = []
-        for h in orch.history.history[-10:]:  # Show last 10
-            history_df.append({
-                "User": h["user"],
-                "Query": h["query"][:50] + "..." if len(h["query"]) > 50 else h["query"],
-                "Answer": h["answer"][:100] + "..." if len(h["answer"]) > 100 else h["answer"],
-                "Time": time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(h["ts"]))
-            })
-        st.dataframe(history_df, use_container_width=True)
-    else:
-        st.info("Belum ada riwayat percakapan")
+            return f"Model (Simple): {prompt[:200]}..."
 
-if __name__ == "__main__":
-    main()
+    def _ollama_generate(self, prompt: str) -> str:
+        url = "http://localhost:11434/api/generate"
+        payload = {"model": self.model, "prompt": prompt, "stream": False}
+        try:
+            resp = requests.post(url, json=payload, timeout=120)
+            return resp.json().get("response", "")
+        except Exception as e:
+            return f"Ollama error: {e}"
+
+    def _openai_generate(self, prompt: str) -> str:
+        api_key = os.getenv("OPENAI_API_KEY", "")
+        url = "https://api.openai.com/v1/chat/completions"
+        headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+        payload = {"model": "gpt-4o-mini", "messages": [{"role": "user", "content": prompt}]}
+        try:
+            resp = requests.post(url, headers=headers, json=payload, timeout=120)
+            data = resp.json()
+            return data["choices"][0]["message"]["content"]
+        except Exception as e:
+            return f"OpenAI error: {e}"
+
+    def _groq_generate(self, prompt: str) -> str:
+        api_key = os.getenv("GROQ_API_KEY", "")
+        url = "https://api.groq.com/openai/v1/chat/completions"
+        headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+        payload = {"model": "llama-3.1-70b-versatile", "messages": [{"role": "user", "content": prompt}]}
+        try:
+            resp = requests.post(url, json=payload, headers=headers, timeout=120)
+            data = resp.json()
+            return data["choices"][0]["message"]["content"]
+        except Exception as e:
+            return f"Groq error: {e}"
+
+    def ask(self, query: str) -> str:
+        contexts = []
+        for name, retr in self.retrievers.items():
+            try:
+                results = retr.retrieve(query)
+                contexts.extend(results)
+            except Exception as e:
+                st.warning(f"Retriever {name} error: {e}")
+        context_text = "\n\n".join(contexts)
+        prompt = f"Jawab pertanyaan berikut berdasarkan konteks:\n\n{context_text}\n\nPertanyaan: {query}\nJawaban:"
+        return self._generate(prompt)
+
+# ==========================
+# 🎨 Streamlit UI
+# ==========================
+st.set_page_config(page_title="🧠 Multi-Source RAG Assistant", layout="wide")
+st.title("🧠 Multi-Source RAG Assistant")
+
+st.sidebar.header("⚙️ Settings")
+provider = st.sidebar.selectbox("Provider", ["ollama", "openai", "groq", "simple"])
+model = st.sidebar.text_input("Model", "llama3.1")
+doc_files = st.sidebar.file_uploader("Upload Documents", type=["pdf", "docx", "pptx", "txt"], accept_multiple_files=True)
+
+temp_paths = []
+if doc_files:
+    for uf in doc_files:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=uf.name) as tmp:
+            tmp.write(uf.read())
+            temp_paths.append(tmp.name)
+
+source_types = st.sidebar.multiselect("Sources", ["Documents", "Web", "SQL", "Vector"], default=["Documents", "Web"])
+retrievers = {}
+
+if "Documents" in source_types and temp_paths:
+    retrievers["docs"] = DocumentRetriever(temp_paths)
+if "Web" in source_types:
+    retrievers["web"] = WebSearchRetriever()
+if "SQL" in source_types:
+    retrievers["sql"] = SQLRetriever("sqlite:///sample.db", "data")
+if "Vector" in source_types:
+    vec = VectorStoreRetriever()
+    retrievers["vector"] = vec
+    if "docs" in retrievers:
+        vec.add(retrievers["docs"].docs)
+
+rag = RAGSystem(retrievers, provider=provider, model=model)
+
+query = st.text_area("💬 Masukkan pertanyaan:")
+if st.button("🔍 Cari Jawaban"):
+    if not query.strip():
+        st.warning("Masukkan pertanyaan terlebih dahulu.")
+    else:
+        with st.spinner("Sedang mencari jawaban..."):
+            answer = rag.ask(query)
+            st.success("✅ Jawaban ditemukan!")
+            st.write(answer)
+            st.divider()
+            st.caption("🔎 Powered by Multi-Source RAG")
+
+# ==========================
+# 🧾 History (optional)
+# ==========================
+if "history" not in st.session_state:
+    st.session_state.history = []
+if st.button("💾 Simpan ke Riwayat") and query:
+    st.session_state.history.append({"query": query, "provider": provider, "model": model})
+if st.session_state.history:
+    st.subheader("📜 Riwayat Pertanyaan")
+    st.dataframe(pd.DataFrame(st.session_state.history), use_container_width=True)
