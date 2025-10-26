@@ -22,30 +22,95 @@ import docx2txt
 from pptx import Presentation
 
 # ---------------------------
-# Helper: LLM client (Ollama HTTP)
+# Helper: LLM client (Multiple providers)
 # ---------------------------
 class OllamaClient:
-    def __init__(self, host: str = "http://localhost:11434"):
+    def __init__(self, host: str = "http://localhost:11434", provider: str = "ollama"):
         self.base = host.rstrip("/")
+        self.provider = provider
+        self.api_key = None
+
+    def set_api_key(self, api_key: str):
+        self.api_key = api_key
 
     def generate(self, model: str, prompt: str, max_tokens: int = 512, temperature: float = 0.0) -> str:
         try:
-            url = f"{self.base}/api/generate"
-            payload = {
-                "model": model,
-                "prompt": prompt,
-                "stream": False,
-                "options": {
-                    "num_predict": max_tokens,
-                    "temperature": temperature
-                }
-            }
-            resp = requests.post(url, json=payload, timeout=120)
-            resp.raise_for_status()
-            data = resp.json()
-            return data.get("response", "").strip()
+            if self.provider == "ollama":
+                return self._ollama_generate(model, prompt, max_tokens, temperature)
+            elif self.provider == "openai":
+                return self._openai_generate(model, prompt, max_tokens, temperature)
+            elif self.provider == "groq":
+                return self._groq_generate(model, prompt, max_tokens, temperature)
+            else:
+                return self._simple_answer(prompt)
         except Exception as e:
-            return f"Error calling Ollama: {str(e)}"
+            return f"Error: {str(e)}"
+
+    def _ollama_generate(self, model: str, prompt: str, max_tokens: int, temperature: float) -> str:
+        url = f"{self.base}/api/generate"
+        payload = {
+            "model": model,
+            "prompt": prompt,
+            "stream": False,
+            "options": {
+                "num_predict": max_tokens,
+                "temperature": temperature
+            }
+        }
+        resp = requests.post(url, json=payload, timeout=120)
+        resp.raise_for_status()
+        data = resp.json()
+        return data.get("response", "").strip()
+
+    def _openai_generate(self, model: str, prompt: str, max_tokens: int, temperature: float) -> str:
+        if not self.api_key:
+            raise ValueError("OpenAI API key required")
+        url = "https://api.openai.com/v1/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json"
+        }
+        payload = {
+            "model": model,
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": max_tokens,
+            "temperature": temperature
+        }
+        resp = requests.post(url, json=headers, timeout=120)
+        resp.raise_for_status()
+        return resp.json()["choices"][0]["message"]["content"]
+
+    def _groq_generate(self, model: str, prompt: str, max_tokens: int, temperature: float) -> str:
+        if not self.api_key:
+            raise ValueError("Groq API key required")
+        url = "https://api.groq.com/openai/v1/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json"
+        }
+        payload = {
+            "model": model,
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": max_tokens,
+            "temperature": temperature
+        }
+        resp = requests.post(url, json=payload, headers=headers, timeout=120)
+        resp.raise_for_status()
+        return resp.json()["choices"][0]["message"]["content"]
+
+    def _simple_answer(self, prompt: str) -> str:
+        """Fallback: simple rule-based answer from context"""
+        if "KONTEKS:" in prompt and "PERTANYAAN:" in prompt:
+            parts = prompt.split("PERTANYAAN:")
+            if len(parts) > 1:
+                context_part = parts[0].split("KONTEKS:")[1].strip()
+                question = parts[1].replace("JAWABAN:", "").strip()
+                
+                if context_part and len(context_part) > 50:
+                    return f"Berdasarkan konteks yang tersedia:\n\n{context_part[:500]}...\n\nUntuk jawaban yang lebih detail, mohon konfigurasikan API key atau jalankan Ollama lokal."
+                else:
+                    return "Konteks tidak tersedia. Mohon upload dokumen atau aktifkan web search untuk mendapatkan informasi."
+        return "Mohon konfigurasikan LLM provider (Ollama, OpenAI, atau Groq) untuk mendapatkan jawaban."
 
 # ---------------------------
 # Retriever: Documents (PDF, DOCX, PPTX)
@@ -109,21 +174,38 @@ class DocumentRetriever:
         return [self.store[i]["text"] for i in idx]
 
 # ---------------------------
-# Retriever: Web (DuckDuckGo)
+# Retriever: Web (DuckDuckGo with retry)
 # ---------------------------
 class WebRetriever:
+    def __init__(self):
+        self.last_search_time = 0
+        self.min_delay = 2  # seconds between searches
+
     def search(self, query: str, n: int = 3) -> List[str]:
         texts = []
+        
+        # Rate limiting
+        time_since_last = time.time() - self.last_search_time
+        if time_since_last < self.min_delay:
+            time.sleep(self.min_delay - time_since_last)
+        
         try:
             with DDGS() as ddgs:
-                for r in ddgs.text(query, max_results=n):
+                results = list(ddgs.text(query, max_results=n))
+                for r in results:
                     body = r.get("body", "")
                     title = r.get("title", "")
-                    snippet = f"{title}\n{body}".strip()
+                    snippet = f"**{title}**\n{body}".strip()
                     if snippet:
                         texts.append(snippet)
+            self.last_search_time = time.time()
         except Exception as e:
-            st.warning(f"Web search error: {str(e)}")
+            error_msg = str(e)
+            if "ratelimit" in error_msg.lower() or "202" in error_msg:
+                st.warning("⚠️ Web search rate limited. Coba lagi setelah beberapa detik.")
+            else:
+                st.warning(f"Web search error: {error_msg}")
+        
         return texts
 
 # ---------------------------
@@ -257,9 +339,10 @@ class UserHistory:
 # Orchestrator
 # ---------------------------
 class RAGOrchestrator:
-    def __init__(self, ollama_host="http://localhost:11434", model="llama3.1:8b"):
-        self.ollama = OllamaClient(ollama_host)
+    def __init__(self, ollama_host="http://localhost:11434", model="llama3.1:8b", provider="ollama"):
+        self.ollama = OllamaClient(ollama_host, provider)
         self.model = model
+        self.provider = provider
         
         # Initialize retrievers with error handling
         try:
@@ -406,6 +489,15 @@ def main():
     st.title("🤖 RAG Hybrid System")
     st.markdown("Pilih sistem RAG yang ingin digunakan untuk menjawab pertanyaan Anda")
     
+    # Info box
+    st.info("""
+    💡 **Tips Penggunaan:**
+    - **Simple Mode**: Tidak perlu API, hanya menampilkan konteks yang ditemukan
+    - **Ollama**: Untuk lokal (harus install Ollama di komputer)
+    - **OpenAI/Groq**: Untuk cloud API (butuh API key)
+    - **Web Search**: Akan di-rate limit jika terlalu sering, tunggu beberapa detik
+    """)
+    
     # Initialize session state
     if 'orchestrator' not in st.session_state:
         st.session_state.orchestrator = RAGOrchestrator()
@@ -416,14 +508,40 @@ def main():
     with st.sidebar:
         st.header("⚙️ Konfigurasi")
         
-        # Ollama settings
-        st.subheader("LLM Settings")
-        ollama_host = st.text_input("Ollama Host", value="http://localhost:11434")
-        model_name = st.text_input("Model Name", value="llama3.1:8b")
+        # LLM Provider selection
+        st.subheader("🤖 LLM Provider")
+        provider = st.selectbox(
+            "Pilih Provider",
+            ["simple", "ollama", "openai", "groq"],
+            help="simple = rule-based (no API needed)"
+        )
+        
+        if provider == "ollama":
+            ollama_host = st.text_input("Ollama Host", value="http://localhost:11434")
+            model_name = st.text_input("Model Name", value="llama3.1:8b")
+            api_key = None
+        elif provider == "openai":
+            api_key = st.text_input("OpenAI API Key", type="password")
+            model_name = st.selectbox("Model", ["gpt-4o-mini", "gpt-4o", "gpt-3.5-turbo"])
+            ollama_host = None
+        elif provider == "groq":
+            api_key = st.text_input("Groq API Key", type="password")
+            model_name = st.selectbox("Model", ["llama-3.3-70b-versatile", "mixtral-8x7b-32768"])
+            ollama_host = None
+        else:  # simple
+            api_key = None
+            model_name = "simple"
+            ollama_host = None
         
         if st.button("Update LLM Config"):
-            st.session_state.orchestrator = RAGOrchestrator(ollama_host, model_name)
-            st.success("Configuration updated!")
+            if provider in ["openai", "groq"] and not api_key:
+                st.error("API Key required!")
+            else:
+                host = ollama_host if ollama_host else "http://localhost:11434"
+                st.session_state.orchestrator = RAGOrchestrator(host, model_name, provider)
+                if api_key:
+                    st.session_state.orchestrator.ollama.set_api_key(api_key)
+                st.success("Configuration updated!")
         
         st.divider()
         
