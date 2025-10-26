@@ -1,6 +1,5 @@
 # ==========================
-# 🚀 RAG SYSTEM - FULL CLOUD API VERSION
-# No localhost dependency - Pure cloud services
+# 🌟 RAG SYSTEM - GEMINI ONLY
 # ==========================
 import os
 import time
@@ -14,24 +13,13 @@ from sentence_transformers import SentenceTransformer, util
 from duckduckgo_search import DDGS
 
 # ==========================
-# 🔑 API Keys Configuration
+# 🔑 Google Gemini API Key
 # ==========================
-# Set your API keys here (replace with your actual keys)
-API_KEYS = {
-    "GROQ_API_KEY": "gsk_YOUR_ACTUAL_KEY_HERE",  # Get from: https://console.groq.com
-    "OPENAI_API_KEY": "sk_YOUR_ACTUAL_KEY_HERE",  # Get from: https://platform.openai.com
-    "ANTHROPIC_API_KEY": "sk-ant-YOUR_ACTUAL_KEY_HERE",  # Get from: https://console.anthropic.com
-    "COHERE_API_KEY": "YOUR_ACTUAL_KEY_HERE",  # Get from: https://dashboard.cohere.com
-    "GEMINI_API_KEY": "YOUR_ACTUAL_KEY_HERE",  # Get from: https://makersuite.google.com/app/apikey
-}
-
-# Load API keys from environment or use defaults
-for key, default_value in API_KEYS.items():
-    if key not in os.environ or not os.environ[key]:
-        os.environ[key] = default_value
+API_KEY = "AIzaSyCR8xgDIv5oYBaDmMyuGGWjqpFi7U8SGA4"  # Ganti dengan key kamu
+os.environ["GEMINI_API_KEY"] = API_KEY
 
 # ==========================
-# 🧩 Cloud Embedding Model
+# 🧩 Embedding Model
 # ==========================
 @st.cache_resource
 def load_embedding_model():
@@ -51,9 +39,7 @@ class BaseRetriever:
 # ==========================
 class DocumentRetriever(BaseRetriever):
     def __init__(self, paths: List[str]):
-        self.docs = []
-        self.metadata = []
-        
+        self.docs, self.metadata = [], []
         for p in paths:
             ext = p.lower().split(".")[-1]
             try:
@@ -65,266 +51,110 @@ class DocumentRetriever(BaseRetriever):
                         if text.strip():
                             self.docs.append(text)
                             self.metadata.append({"source": os.path.basename(p), "page": i+1})
-                            
                 elif ext in ["doc", "docx"]:
                     import docx2txt
                     text = docx2txt.process(p)
                     if text.strip():
                         self.docs.append(text)
                         self.metadata.append({"source": os.path.basename(p)})
-                        
                 elif ext in ["ppt", "pptx"]:
                     from pptx import Presentation
                     prs = Presentation(p)
                     for i, slide in enumerate(prs.slides):
-                        text_runs = []
-                        for shape in slide.shapes:
-                            if hasattr(shape, "text"):
-                                text_runs.append(shape.text)
+                        text_runs = [shape.text for shape in slide.shapes if hasattr(shape, "text")]
                         text = " ".join(text_runs)
                         if text.strip():
                             self.docs.append(text)
                             self.metadata.append({"source": os.path.basename(p), "slide": i+1})
-                            
                 elif ext in ["txt", "md"]:
                     with open(p, "r", encoding="utf-8") as f:
                         text = f.read()
                         if text.strip():
                             self.docs.append(text)
                             self.metadata.append({"source": os.path.basename(p)})
-                            
             except Exception as e:
                 st.warning(f"⚠️ Gagal memuat {os.path.basename(p)}: {str(e)}")
 
     def retrieve(self, query: str) -> List[Dict[str, Any]]:
         if not self.docs:
             return []
-        
         query_emb = EMBED_MODEL.encode(query, convert_to_tensor=True)
         docs_emb = EMBED_MODEL.encode(self.docs, convert_to_tensor=True)
         scores = util.cos_sim(query_emb, docs_emb)[0].cpu().numpy()
-        
         topk = min(3, len(self.docs))
         best_idx = np.argsort(scores)[-topk:][::-1]
-        
-        results = []
-        for idx in best_idx:
-            results.append({
-                "content": self.docs[idx],
-                "score": float(scores[idx]),
-                "metadata": self.metadata[idx]
-            })
-        return results
+        return [{
+            "content": self.docs[idx],
+            "score": float(scores[idx]),
+            "metadata": self.metadata[idx]
+        } for idx in best_idx]
 
 # ==========================
 # 🌐 Web Search Retriever
 # ==========================
 class WebSearchRetriever(BaseRetriever):
-    def __init__(self, max_results=5, min_delay=1):
+    def __init__(self, max_results=5):
         self.max_results = max_results
-        self.min_delay = min_delay
 
     def retrieve(self, query: str) -> List[Dict[str, Any]]:
-        time.sleep(self.min_delay)
         try:
             with DDGS() as ddgs:
                 results = list(ddgs.text(query, max_results=self.max_results))
-                
-            formatted_results = []
-            for r in results:
-                formatted_results.append({
-                    "content": r.get("body", ""),
-                    "metadata": {
-                        "title": r.get("title", ""),
-                        "url": r.get("href", ""),
-                        "source": "web_search"
-                    }
-                })
-            return formatted_results
+            return [{
+                "content": r.get("body", ""),
+                "metadata": {"title": r.get("title", ""), "url": r.get("href", ""), "source": "web_search"}
+            } for r in results]
         except Exception as e:
             st.warning(f"⚠️ Web search error: {str(e)}")
             return []
 
 # ==========================
-# 🤗 Hugging Face Vector Store
+# 🧠 Vector Store
 # ==========================
 class HuggingFaceVectorStore(BaseRetriever):
-    """Vector store using in-memory embeddings (no external DB needed)"""
     def __init__(self):
-        self.docs = []
-        self.embeddings = []
-        self.metadata = []
+        self.docs, self.embeddings, self.metadata = [], [], []
 
     def add(self, docs: List[str], metadata: List[Dict] = None):
-        if not docs:
-            return
-        
-        new_embeddings = EMBED_MODEL.encode(docs, convert_to_tensor=True)
-        self.embeddings.extend(new_embeddings.cpu().numpy())
+        if not docs: return
+        new_emb = EMBED_MODEL.encode(docs, convert_to_tensor=True)
+        self.embeddings.extend(new_emb.cpu().numpy())
         self.docs.extend(docs)
-        
-        if metadata:
-            self.metadata.extend(metadata)
-        else:
-            self.metadata.extend([{"source": "unknown"}] * len(docs))
+        self.metadata.extend(metadata or [{"source": "unknown"}] * len(docs))
 
     def retrieve(self, query: str) -> List[Dict[str, Any]]:
         if not self.docs:
             return []
-        
         query_emb = EMBED_MODEL.encode(query, convert_to_tensor=True).cpu().numpy()
         scores = np.dot(self.embeddings, query_emb) / (
             np.linalg.norm(self.embeddings, axis=1) * np.linalg.norm(query_emb)
         )
-        
         topk = min(3, len(self.docs))
         best_idx = np.argsort(scores)[-topk:][::-1]
-        
-        results = []
-        for idx in best_idx:
-            results.append({
-                "content": self.docs[idx],
-                "score": float(scores[idx]),
-                "metadata": self.metadata[idx]
-            })
-        return results
+        return [{
+            "content": self.docs[idx],
+            "score": float(scores[idx]),
+            "metadata": self.metadata[idx]
+        } for idx in best_idx]
 
 # ==========================
-# ⚙️ RAG System (Cloud APIs Only)
+# 🤖 Gemini RAG System
 # ==========================
-class RAGSystem:
-    def __init__(self, retrievers: Dict[str, BaseRetriever], provider="groq", model="llama-3.1-70b-versatile"):
+class GeminiRAG:
+    def __init__(self, retrievers: Dict[str, BaseRetriever], model="gemini-1.5-flash"):
         self.retrievers = retrievers
-        self.provider = provider
         self.model = model
+        self.api_key = os.getenv("GEMINI_API_KEY", "")
 
     def _generate(self, prompt: str) -> str:
-        if self.provider == "openai":
-            return self._openai_generate(prompt)
-        elif self.provider == "groq":
-            return self._groq_generate(prompt)
-        elif self.provider == "anthropic":
-            return self._anthropic_generate(prompt)
-        elif self.provider == "cohere":
-            return self._cohere_generate(prompt)
-        elif self.provider == "gemini":
-            return self._gemini_generate(prompt)
-        else:
-            return f"⚠️ Provider '{self.provider}' tidak didukung. Gunakan: openai, groq, anthropic, cohere, atau gemini"
-
-    def _openai_generate(self, prompt: str) -> str:
-        api_key = os.getenv("OPENAI_API_KEY", "")
-        if not api_key or api_key == "sk_YOUR_ACTUAL_KEY_HERE":
-            return "❌ OPENAI_API_KEY tidak ditemukan atau belum diisi"
-        
-        url = "https://api.openai.com/v1/chat/completions"
-        headers = {
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json"
-        }
-        payload = {
-            "model": self.model or "gpt-4o-mini",
-            "messages": [{"role": "user", "content": prompt}],
-            "temperature": 0.7,
-            "max_tokens": 1000
-        }
-        
-        try:
-            resp = requests.post(url, headers=headers, json=payload, timeout=60)
-            resp.raise_for_status()
-            return resp.json()["choices"][0]["message"]["content"]
-        except Exception as e:
-            return f"❌ OpenAI error: {str(e)}"
-
-    def _groq_generate(self, prompt: str) -> str:
-        api_key = os.getenv("GROQ_API_KEY", "")
-        if not api_key or api_key == "gsk_YOUR_ACTUAL_KEY_HERE":
-            return "❌ GROQ_API_KEY tidak ditemukan atau belum diisi"
-        
-        url = "https://api.groq.com/openai/v1/chat/completions"
-        headers = {
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json"
-        }
-        payload = {
-            "model": self.model or "llama-3.1-70b-versatile",
-            "messages": [{"role": "user", "content": prompt}],
-            "temperature": 0.7,
-            "max_tokens": 1000
-        }
-        
-        try:
-            resp = requests.post(url, headers=headers, json=payload, timeout=60)
-            resp.raise_for_status()
-            return resp.json()["choices"][0]["message"]["content"]
-        except Exception as e:
-            return f"❌ Groq error: {str(e)}"
-
-    def _anthropic_generate(self, prompt: str) -> str:
-        api_key = os.getenv("ANTHROPIC_API_KEY", "")
-        if not api_key or api_key == "sk-ant-YOUR_ACTUAL_KEY_HERE":
-            return "❌ ANTHROPIC_API_KEY tidak ditemukan atau belum diisi"
-        
-        url = "https://api.anthropic.com/v1/messages"
-        headers = {
-            "x-api-key": api_key,
-            "anthropic-version": "2023-06-01",
-            "Content-Type": "application/json"
-        }
-        payload = {
-            "model": self.model or "claude-3-5-sonnet-20241022",
-            "max_tokens": 1000,
-            "messages": [{"role": "user", "content": prompt}]
-        }
-        
-        try:
-            resp = requests.post(url, headers=headers, json=payload, timeout=60)
-            resp.raise_for_status()
-            return resp.json()["content"][0]["text"]
-        except Exception as e:
-            return f"❌ Anthropic error: {str(e)}"
-
-    def _cohere_generate(self, prompt: str) -> str:
-        api_key = os.getenv("COHERE_API_KEY", "")
-        if not api_key or api_key == "YOUR_ACTUAL_KEY_HERE":
-            return "❌ COHERE_API_KEY tidak ditemukan atau belum diisi"
-        
-        url = "https://api.cohere.ai/v1/chat"
-        headers = {
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json"
-        }
-        payload = {
-            "model": self.model or "command",
-            "message": prompt,
-            "temperature": 0.7
-        }
-        
-        try:
-            resp = requests.post(url, headers=headers, json=payload, timeout=60)
-            resp.raise_for_status()
-            return resp.json()["text"]
-        except Exception as e:
-            return f"❌ Cohere error: {str(e)}"
-
-    def _gemini_generate(self, prompt: str) -> str:
-        api_key = os.getenv("GEMINI_API_KEY", "")
-        if not api_key or api_key == "YOUR_ACTUAL_KEY_HERE":
-            return "❌ GEMINI_API_KEY tidak ditemukan atau belum diisi"
-        
-        model = self.model or "gemini-1.5-flash"
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
+        if not self.api_key:
+            return "❌ GEMINI_API_KEY tidak ditemukan."
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{self.model}:generateContent?key={self.api_key}"
         headers = {"Content-Type": "application/json"}
         payload = {
-            "contents": [{
-                "parts": [{"text": prompt}]
-            }],
-            "generationConfig": {
-                "temperature": 0.7,
-                "maxOutputTokens": 1000
-            }
+            "contents": [{"parts": [{"text": prompt}]}],
+            "generationConfig": {"temperature": 0.7, "maxOutputTokens": 1000}
         }
-        
         try:
             resp = requests.post(url, headers=headers, json=payload, timeout=60)
             resp.raise_for_status()
@@ -334,29 +164,22 @@ class RAGSystem:
 
     def ask(self, query: str) -> Dict[str, Any]:
         all_results = []
-        
         for name, retr in self.retrievers.items():
             try:
-                results = retr.retrieve(query)
-                for r in results:
+                for r in retr.retrieve(query):
                     r["retriever"] = name
                     all_results.append(r)
             except Exception as e:
                 st.warning(f"⚠️ Retriever {name} error: {str(e)}")
-        
-        # Sort by score if available
-        all_results.sort(key=lambda x: x.get("score", 0), reverse=True)
-        
-        # Take top 5 contexts
-        top_results = all_results[:5]
-        
-        context_text = "\n\n".join([
-            f"[Sumber: {r['metadata'].get('source', 'unknown')}]\n{r['content']}"
-            for r in top_results
-        ])
-        
-        prompt = f"""Berdasarkan konteks berikut, jawab pertanyaan dengan detail dan akurat.
 
+        all_results.sort(key=lambda x: x.get("score", 0), reverse=True)
+        top_results = all_results[:5]
+
+        context_text = "\n\n".join([
+            f"[Sumber: {r['metadata'].get('source', 'unknown')}]\n{r['content']}" for r in top_results
+        ])
+
+        prompt = f"""Berdasarkan konteks berikut, jawab pertanyaan dengan detail dan akurat.
 KONTEKS:
 {context_text}
 
@@ -366,203 +189,61 @@ INSTRUKSI:
 - Jawab dalam bahasa Indonesia
 - Gunakan informasi dari konteks yang relevan
 - Jika konteks tidak cukup, sebutkan secara jujur
-- Berikan jawaban yang terstruktur dan mudah dipahami
 
 JAWABAN:"""
-        
+
         answer = self._generate(prompt)
-        
-        return {
-            "answer": answer,
-            "contexts": top_results,
-            "num_sources": len(top_results)
-        }
+        return {"answer": answer, "contexts": top_results, "num_sources": len(top_results)}
 
 # ==========================
 # 🎨 Streamlit UI
 # ==========================
-st.set_page_config(page_title="🧠 Cloud RAG Assistant", layout="wide")
+st.set_page_config(page_title="🤖 Gemini RAG Assistant", layout="wide")
+st.title("🤖 Google Gemini RAG Assistant")
+st.caption("✨ Menggabungkan dokumen, web, dan vektor dengan Gemini API")
 
-st.title("🧠 Multi-Source RAG Assistant")
-st.caption("🌐 100% Cloud API - No Localhost Required")
+st.sidebar.header("⚙️ Konfigurasi")
+st.sidebar.success("✅ Gemini API Key aktif")
 
-# Sidebar
-st.sidebar.header("⚙️ Configuration")
+# Upload dokumen
+uploaded_files = st.sidebar.file_uploader("📁 Upload dokumen", type=["pdf", "docx", "pptx", "txt", "md"], accept_multiple_files=True)
+source_types = st.sidebar.multiselect("🔍 Data Sources", ["Documents", "Web Search", "Vector Store"], default=["Documents", "Web Search"])
 
-# API Keys Status Check
-with st.sidebar.expander("🔑 API Keys Status"):
-    key_checks = {
-        "GROQ_API_KEY": "gsk_YOUR_ACTUAL_KEY_HERE",
-        "GEMINI_API_KEY": "YOUR_ACTUAL_KEY_HERE",
-        "OPENAI_API_KEY": "sk_YOUR_ACTUAL_KEY_HERE",
-        "ANTHROPIC_API_KEY": "sk-ant-YOUR_ACTUAL_KEY_HERE",
-        "COHERE_API_KEY": "YOUR_ACTUAL_KEY_HERE"
-    }
-    
-    for key, default_val in key_checks.items():
-        api_key = os.getenv(key, "")
-        provider_name = key.replace('_API_KEY', '')
-        
-        if api_key and api_key != default_val:
-            st.success(f"✅ {provider_name}")
-        else:
-            st.warning(f"⚠️ {provider_name} not set")
-    
-    st.caption("💡 Edit API keys di baris 15-21 kode")
-
-# API Provider Selection
-provider = st.sidebar.selectbox(
-    "🤖 AI Provider",
-    ["groq", "gemini", "openai", "anthropic", "cohere"],
-    help="Pilih provider AI (pastikan API key sudah diisi)"
-)
-
-# Model mapping
-model_map = {
-    "groq": ["llama-3.1-70b-versatile", "llama-3.1-8b-instant", "mixtral-8x7b-32768"],
-    "gemini": ["gemini-1.5-flash", "gemini-1.5-pro", "gemini-pro"],
-    "openai": ["gpt-4o-mini", "gpt-4o", "gpt-3.5-turbo"],
-    "anthropic": ["claude-3-5-sonnet-20241022", "claude-3-haiku-20240307"],
-    "cohere": ["command", "command-light"]
-}
-
-model = st.sidebar.selectbox("📦 Model", model_map[provider])
-
-# Document Upload
-st.sidebar.subheader("📁 Upload Documents")
-doc_files = st.sidebar.file_uploader(
-    "Upload files",
-    type=["pdf", "docx", "pptx", "txt", "md"],
-    accept_multiple_files=True,
-    help="Mendukung: PDF, Word, PowerPoint, Text"
-)
-
-# Source Selection
-source_types = st.sidebar.multiselect(
-    "🔍 Data Sources",
-    ["Documents", "Web Search", "Vector Store"],
-    default=["Documents", "Web Search"]
-)
-
-# Initialize retrievers
-retrievers = {}
-temp_paths = []
-
-# Process uploaded documents
-if doc_files:
-    for uf in doc_files:
+# Proses retriever
+retrievers, temp_paths = {}, []
+if uploaded_files:
+    for uf in uploaded_files:
         with tempfile.NamedTemporaryFile(delete=False, suffix=f"_{uf.name}") as tmp:
             tmp.write(uf.read())
             temp_paths.append(tmp.name)
-
-# Setup retrievers
 if "Documents" in source_types and temp_paths:
-    with st.spinner("📄 Memproses dokumen..."):
-        retrievers["docs"] = DocumentRetriever(temp_paths)
-        st.sidebar.success(f"✅ {len(retrievers['docs'].docs)} dokumen chunks berhasil dimuat")
-
+    retrievers["docs"] = DocumentRetriever(temp_paths)
 if "Web Search" in source_types:
-    retrievers["web"] = WebSearchRetriever(max_results=5)
-    st.sidebar.info("🌐 Web search ready")
-
+    retrievers["web"] = WebSearchRetriever()
 if "Vector Store" in source_types:
-    vec_store = HuggingFaceVectorStore()
+    vec = HuggingFaceVectorStore()
     if "docs" in retrievers:
-        doc_retriever = retrievers["docs"]
-        vec_store.add(doc_retriever.docs, doc_retriever.metadata)
-        st.sidebar.success(f"🧠 Vector store: {len(vec_store.docs)} chunks")
-    retrievers["vector"] = vec_store
+        vec.add(retrievers["docs"].docs, retrievers["docs"].metadata)
+    retrievers["vector"] = vec
 
-# Main interface
-st.divider()
-
-# Initialize RAG
-rag = RAGSystem(retrievers, provider=provider, model=model)
-
-# Query input
-query = st.text_area(
-    "💬 Masukkan pertanyaan Anda:",
-    height=100,
-    placeholder="Contoh: Apa isi dokumen yang saya upload? Atau: Cari informasi terbaru tentang AI..."
-)
-
-col1, col2 = st.columns([1, 5])
-with col1:
-    search_btn = st.button("🔍 Cari Jawaban", type="primary")
-with col2:
-    clear_btn = st.button("🗑️ Clear")
-
-if clear_btn:
-    st.rerun()
-
-# Process query
-if search_btn:
+# Input pertanyaan
+query = st.text_area("💬 Pertanyaan Anda:", placeholder="Contoh: Apa isi dokumen saya?")
+if st.button("🔍 Cari Jawaban"):
     if not query.strip():
-        st.warning("⚠️ Masukkan pertanyaan terlebih dahulu")
+        st.warning("⚠️ Masukkan pertanyaan terlebih dahulu.")
     elif not retrievers:
-        st.warning("⚠️ Pilih minimal satu data source")
+        st.warning("⚠️ Pilih minimal satu sumber data.")
     else:
-        with st.spinner("🔎 Mencari jawaban..."):
+        with st.spinner("🤔 Sedang memproses dengan Gemini..."):
+            rag = GeminiRAG(retrievers)
             result = rag.ask(query)
-            
-            st.success("✅ Jawaban ditemukan!")
-            
-            # Display answer
             st.markdown("### 💡 Jawaban:")
             st.markdown(result["answer"])
-            
-            # Display sources
-            with st.expander(f"📚 Lihat Sumber ({result['num_sources']} dokumen)"):
+            with st.expander(f"📚 Lihat {result['num_sources']} sumber"):
                 for i, ctx in enumerate(result["contexts"], 1):
                     st.markdown(f"**Sumber {i}:** {ctx['metadata'].get('source', 'Unknown')}")
-                    if 'score' in ctx:
-                        st.caption(f"Relevance: {ctx['score']:.2%}")
-                    st.text(ctx["content"][:300] + "...")
+                    st.caption(f"Relevansi: {ctx['score']:.2%}")
+                    st.text(ctx['content'][:300] + "...")
                     st.divider()
 
-# History tracking
-if "history" not in st.session_state:
-    st.session_state.history = []
-
-if search_btn and query:
-    st.session_state.history.append({
-        "query": query,
-        "provider": provider,
-        "model": model,
-        "timestamp": pd.Timestamp.now()
-    })
-
-# Display history
-if st.session_state.history:
-    with st.expander("📜 Riwayat Pertanyaan"):
-        df = pd.DataFrame(st.session_state.history)
-        st.dataframe(df, use_container_width=True)
-
-# Footer
-st.divider()
-st.info("""
-### 🔐 Cara Setup API Keys:
-1. **Edit kode** di baris 15-21 dan ganti dengan API key Anda:
-   ```python
-   API_KEYS = {
-       "GROQ_API_KEY": "gsk_YOUR_ACTUAL_KEY_HERE",
-       "GEMINI_API_KEY": "AIzaSyCR8xgDIv5oYBaDmMyuGGWjqpFi7U8SGA4",
-       ...
-   }
-   ```
-
-2. **Atau gunakan environment variables:**
-   ```bash
-   export GROQ_API_KEY="gsk_..."
-   export GEMINI_API_KEY="..."
-   export OPENAI_API_KEY="sk-..."
-   ```
-
-3. **Dapatkan API keys gratis:**
-   - 🚀 **Groq**: https://console.groq.com (Recommended - Fast & Free!)
-   - 💎 **Gemini**: https://makersuite.google.com/app/apikey (Google - Free!)
-   - 🤖 OpenAI: https://platform.openai.com
-   - 🧠 Anthropic: https://console.anthropic.com
-   - 📝 Cohere: https://dashboard.cohere.com
-""")
-st.caption("💡 Powered by Multi-Source RAG with Cloud APIs")
+st.caption("💡 Powered by Google Gemini + Semantic Retrieval")
