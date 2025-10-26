@@ -8,16 +8,15 @@ duckduckgo-search==6.3.5
 # Database
 sqlalchemy==2.0.36
 
-# Document loaders - SIMPLIFIED
-langchain-community==0.3.12
+# Document loaders - Python 3.13 compatible
 pypdf==5.1.0
 docx2txt==0.8
 python-pptx==1.0.2
 
 # Embeddings and vector store
 sentence-transformers==3.3.1
+numpy==2.1.3
 chromadb==0.5.23
-numpy==1.26.4
 
 # Supporting libraries
 beautifulsoup4==4.12.3
@@ -25,3 +24,7 @@ lxml==5.3.0
 pillow==11.0.0
 typing-extensions==4.12.2
 pydantic==2.10.3
+
+# Langchain minimal (without unstructured)
+langchain-core==0.3.21
+langchain-text-splitters==0.3.2
