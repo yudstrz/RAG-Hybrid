@@ -1,0 +1,21 @@
+# core
+requests
+langchain
+chromadb
+duckduckgo_search
+sqlalchemy
+pandas
+
+# document loaders
+pypdf
+python-docx
+python-pptx
+
+# embedding / vector (if ingin lokal)
+sentence-transformers
+
+# optional (audio/video transcription)
+whisper  # kalau mau transkripsi lokal (opsional)
+
+# streamlit (opsional UI)
+streamlit
