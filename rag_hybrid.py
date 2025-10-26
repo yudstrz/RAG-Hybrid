@@ -22,7 +22,7 @@ API_KEYS = {
     "OPENAI_API_KEY": "sk_YOUR_ACTUAL_KEY_HERE",  # Get from: https://platform.openai.com
     "ANTHROPIC_API_KEY": "sk-ant-YOUR_ACTUAL_KEY_HERE",  # Get from: https://console.anthropic.com
     "COHERE_API_KEY": "YOUR_ACTUAL_KEY_HERE",  # Get from: https://dashboard.cohere.com
-    "GEMINI_API_KEY": "AIzaSyCR8xgDIv5oYBaDmMyuGGWjqpFi7U8SGA4",  # Get from: https://makersuite.google.com/app/apikey
+    "GEMINI_API_KEY": "YOUR_ACTUAL_KEY_HERE",  # Get from: https://makersuite.google.com/app/apikey
 }
 
 # Load API keys from environment or use defaults
@@ -546,7 +546,7 @@ st.info("""
    ```python
    API_KEYS = {
        "GROQ_API_KEY": "gsk_YOUR_ACTUAL_KEY_HERE",
-       "GEMINI_API_KEY": "YOUR_ACTUAL_KEY_HERE",
+       "GEMINI_API_KEY": "AIzaSyCR8xgDIv5oYBaDmMyuGGWjqpFi7U8SGA4",
        ...
    }
    ```
