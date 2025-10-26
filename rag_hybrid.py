@@ -180,19 +180,37 @@ class TranscriptRetriever:
 # ---------------------------
 class VectorStoreRetriever:
     def __init__(self):
-        self.client = chromadb.Client()
+        self.client = None
+        self.col = None
+        self.enabled = False
+        self._initialize()
+    
+    def _initialize(self):
         try:
-            self.col = self.client.get_collection("rag_collection")
-        except Exception:
-            self.col = self.client.create_collection("rag_collection")
+            # Use ephemeral client for Streamlit Cloud
+            from chromadb.config import Settings
+            self.client = chromadb.Client(Settings(
+                is_persistent=False,
+                anonymized_telemetry=False
+            ))
+            self.col = self.client.get_or_create_collection("rag_collection")
+            self.enabled = True
+        except Exception as e:
+            st.warning(f"ChromaDB not available: {str(e)}")
+            self.enabled = False
 
     def add_texts(self, texts: List[str], ids: Optional[List[str]] = None):
-        if not texts:
+        if not self.enabled or not texts:
             return
-        ids = ids or [str(time.time()) + "_" + str(i) for i in range(len(texts))]
-        self.col.add(ids=ids, documents=texts)
+        try:
+            ids = ids or [str(time.time()) + "_" + str(i) for i in range(len(texts))]
+            self.col.add(ids=ids, documents=texts)
+        except Exception as e:
+            st.warning(f"Error adding to vector store: {str(e)}")
 
     def retrieve(self, query: str, k: int = 3) -> List[str]:
+        if not self.enabled:
+            return []
         try:
             res = self.col.query(query_texts=[query], n_results=k)
             docs = []
@@ -242,15 +260,57 @@ class RAGOrchestrator:
     def __init__(self, ollama_host="http://localhost:11434", model="llama3.1:8b"):
         self.ollama = OllamaClient(ollama_host)
         self.model = model
-        self.doc_retriever = DocumentRetriever()
-        self.web = WebRetriever()
-        self.sql = None
-        self.api = APIClientRetriever()
-        self.transcripts = TranscriptRetriever()
-        self.vector = VectorStoreRetriever()
-        self.kg = KnowledgeGraphRetriever()
-        self.iot = IoTRetriever()
-        self.history = UserHistory()
+        
+        # Initialize retrievers with error handling
+        try:
+            self.doc_retriever = DocumentRetriever()
+        except Exception as e:
+            st.warning(f"Document retriever initialization failed: {str(e)}")
+            self.doc_retriever = None
+            
+        try:
+            self.web = WebRetriever()
+        except Exception as e:
+            st.warning(f"Web retriever initialization failed: {str(e)}")
+            self.web = None
+            
+        self.sql = None  # Initialize on demand
+        
+        try:
+            self.api = APIClientRetriever()
+        except Exception as e:
+            st.warning(f"API retriever initialization failed: {str(e)}")
+            self.api = None
+            
+        try:
+            self.transcripts = TranscriptRetriever()
+        except Exception as e:
+            st.warning(f"Transcript retriever initialization failed: {str(e)}")
+            self.transcripts = None
+            
+        try:
+            self.vector = VectorStoreRetriever()
+        except Exception as e:
+            st.warning(f"Vector store initialization failed: {str(e)}")
+            self.vector = None
+            
+        try:
+            self.kg = KnowledgeGraphRetriever()
+        except Exception as e:
+            st.warning(f"Knowledge graph initialization failed: {str(e)}")
+            self.kg = None
+            
+        try:
+            self.iot = IoTRetriever()
+        except Exception as e:
+            st.warning(f"IoT retriever initialization failed: {str(e)}")
+            self.iot = None
+            
+        try:
+            self.history = UserHistory()
+        except Exception as e:
+            st.warning(f"User history initialization failed: {str(e)}")
+            self.history = UserHistory()  # This should always work
 
     def set_sql(self, connection_string: str):
         self.sql = SQLRetriever(connection_string)
@@ -258,23 +318,54 @@ class RAGOrchestrator:
     def gather_context(self, query: str, sources: List[str], k_each: int = 3) -> str:
         contexts = []
         
-        if "doc" in sources:
-            contexts += self.doc_retriever.retrieve(query, k=k_each)
-        if "web" in sources:
-            contexts += self.web.search(query, n=k_each)
+        if "doc" in sources and self.doc_retriever:
+            try:
+                contexts += self.doc_retriever.retrieve(query, k=k_each)
+            except Exception as e:
+                st.warning(f"Doc retrieval error: {str(e)}")
+                
+        if "web" in sources and self.web:
+            try:
+                contexts += self.web.search(query, n=k_each)
+            except Exception as e:
+                st.warning(f"Web search error: {str(e)}")
+                
         if "sql" in sources and self.sql:
-            contexts += self.sql.query(query)
-        if "vector" in sources:
-            contexts += self.vector.retrieve(query, k=k_each)
-        if "transcript" in sources:
-            contexts += self.transcripts.retrieve(query, k=k_each)
-        if "kg" in sources:
-            contexts += self.kg.query(query)
-        if "iot" in sources:
-            contexts.append(self.iot.get_latest(device_id="device123"))
-        if "api" in sources:
-            # Example API call - customize as needed
-            pass
+            try:
+                contexts += self.sql.query(query)
+            except Exception as e:
+                st.warning(f"SQL query error: {str(e)}")
+                
+        if "vector" in sources and self.vector and self.vector.enabled:
+            try:
+                contexts += self.vector.retrieve(query, k=k_each)
+            except Exception as e:
+                st.warning(f"Vector retrieval error: {str(e)}")
+                
+        if "transcript" in sources and self.transcripts:
+            try:
+                contexts += self.transcripts.retrieve(query, k=k_each)
+            except Exception as e:
+                st.warning(f"Transcript retrieval error: {str(e)}")
+                
+        if "kg" in sources and self.kg:
+            try:
+                contexts += self.kg.query(query)
+            except Exception as e:
+                st.warning(f"Knowledge graph query error: {str(e)}")
+                
+        if "iot" in sources and self.iot:
+            try:
+                contexts.append(self.iot.get_latest(device_id="device123"))
+            except Exception as e:
+                st.warning(f"IoT retrieval error: {str(e)}")
+                
+        if "api" in sources and self.api:
+            try:
+                # Example API call - customize as needed
+                pass
+            except Exception as e:
+                st.warning(f"API call error: {str(e)}")
         
         seen = set()
         final_ctx = []
@@ -413,6 +504,22 @@ def main():
     
     # Main area: RAG System Selection
     st.header("🔍 Pilih Sistem RAG")
+    
+    # Show retriever status
+    with st.expander("📊 Status Sistem RAG"):
+        col1, col2 = st.columns(2)
+        with col1:
+            st.write("✅ Document Retriever:", "Active" if orch.doc_retriever else "❌ Inactive")
+            st.write("✅ Web Search:", "Active" if orch.web else "❌ Inactive")
+            st.write("✅ SQL Database:", "Active" if orch.sql else "❌ Not configured")
+            st.write("✅ API Client:", "Active" if orch.api else "❌ Inactive")
+            st.write("✅ Transcript:", "Active" if orch.transcripts else "❌ Inactive")
+        with col2:
+            vector_status = "Active" if (orch.vector and orch.vector.enabled) else "❌ Inactive"
+            st.write("✅ Vector Store:", vector_status)
+            st.write("✅ Knowledge Graph:", "Active" if orch.kg else "❌ Inactive")
+            st.write("✅ IoT Retriever:", "Active" if orch.iot else "❌ Inactive")
+            st.write("✅ User History:", "Active" if orch.history else "❌ Inactive")
     
     # Create columns for checkboxes
     col1, col2 = st.columns(2)
