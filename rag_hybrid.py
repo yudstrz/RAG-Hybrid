@@ -12,10 +12,14 @@ import streamlit as st
 import requests
 from duckduckgo_search import DDGS
 from sqlalchemy import create_engine, text
-from langchain.document_loaders import PyPDFLoader, Docx2txtLoader, UnstructuredPowerPointLoader
 from sentence_transformers import SentenceTransformer
 import chromadb
 import numpy as np
+
+# Document loaders - manual implementation
+import pypdf
+import docx2txt
+from pptx import Presentation
 
 # ---------------------------
 # Helper: LLM client (Ollama HTTP)
@@ -56,20 +60,30 @@ class DocumentRetriever:
         for f in file_paths:
             try:
                 if f.lower().endswith(".pdf"):
-                    loader = PyPDFLoader(f)
-                    docs = loader.load()
-                    for d in docs:
-                        texts.append(d.page_content)
+                    # Manual PDF loading
+                    with open(f, 'rb') as pdf_file:
+                        pdf_reader = pypdf.PdfReader(pdf_file)
+                        for page in pdf_reader.pages:
+                            text = page.extract_text()
+                            if text:
+                                texts.append(text)
+                                
                 elif f.lower().endswith(".docx"):
-                    loader = Docx2txtLoader(f)
-                    docs = loader.load()
-                    for d in docs:
-                        texts.append(d.page_content)
+                    # DOCX loading
+                    text = docx2txt.process(f)
+                    if text:
+                        texts.append(text)
+                        
                 elif f.lower().endswith(".pptx"):
-                    loader = UnstructuredPowerPointLoader(f)
-                    docs = loader.load()
-                    for d in docs:
-                        texts.append(d.page_content)
+                    # PPTX loading
+                    prs = Presentation(f)
+                    slide_texts = []
+                    for slide in prs.slides:
+                        for shape in slide.shapes:
+                            if hasattr(shape, "text"):
+                                slide_texts.append(shape.text)
+                    if slide_texts:
+                        texts.append("\n".join(slide_texts))
                 else:
                     with open(f, "r", encoding="utf-8", errors="ignore") as fh:
                         texts.append(fh.read())
