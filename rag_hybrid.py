@@ -14,6 +14,23 @@ from sentence_transformers import SentenceTransformer, util
 from duckduckgo_search import DDGS
 
 # ==========================
+# 🔑 API Keys Configuration
+# ==========================
+# Set your API keys here (replace with your actual keys)
+API_KEYS = {
+    "GROQ_API_KEY": "gsk_YOUR_ACTUAL_KEY_HERE",  # Get from: https://console.groq.com
+    "OPENAI_API_KEY": "sk_YOUR_ACTUAL_KEY_HERE",  # Get from: https://platform.openai.com
+    "ANTHROPIC_API_KEY": "sk-ant-YOUR_ACTUAL_KEY_HERE",  # Get from: https://console.anthropic.com
+    "COHERE_API_KEY": "YOUR_ACTUAL_KEY_HERE",  # Get from: https://dashboard.cohere.com
+    "GEMINI_API_KEY": "AIzaSyCR8xgDIv5oYBaDmMyuGGWjqpFi7U8SGA4",  # Get from: https://makersuite.google.com/app/apikey
+}
+
+# Load API keys from environment or use defaults
+for key, default_value in API_KEYS.items():
+    if key not in os.environ or not os.environ[key]:
+        os.environ[key] = default_value
+
+# ==========================
 # 🧩 Cloud Embedding Model
 # ==========================
 @st.cache_resource
@@ -190,13 +207,15 @@ class RAGSystem:
             return self._anthropic_generate(prompt)
         elif self.provider == "cohere":
             return self._cohere_generate(prompt)
+        elif self.provider == "gemini":
+            return self._gemini_generate(prompt)
         else:
-            return f"⚠️ Provider '{self.provider}' tidak didukung. Gunakan: openai, groq, anthropic, atau cohere"
+            return f"⚠️ Provider '{self.provider}' tidak didukung. Gunakan: openai, groq, anthropic, cohere, atau gemini"
 
     def _openai_generate(self, prompt: str) -> str:
         api_key = os.getenv("OPENAI_API_KEY", "")
-        if not api_key:
-            return "❌ OPENAI_API_KEY tidak ditemukan di environment variables"
+        if not api_key or api_key == "sk_YOUR_ACTUAL_KEY_HERE":
+            return "❌ OPENAI_API_KEY tidak ditemukan atau belum diisi"
         
         url = "https://api.openai.com/v1/chat/completions"
         headers = {
@@ -219,8 +238,8 @@ class RAGSystem:
 
     def _groq_generate(self, prompt: str) -> str:
         api_key = os.getenv("GROQ_API_KEY", "")
-        if not api_key:
-            return "❌ GROQ_API_KEY tidak ditemukan di environment variables"
+        if not api_key or api_key == "gsk_YOUR_ACTUAL_KEY_HERE":
+            return "❌ GROQ_API_KEY tidak ditemukan atau belum diisi"
         
         url = "https://api.groq.com/openai/v1/chat/completions"
         headers = {
@@ -243,8 +262,8 @@ class RAGSystem:
 
     def _anthropic_generate(self, prompt: str) -> str:
         api_key = os.getenv("ANTHROPIC_API_KEY", "")
-        if not api_key:
-            return "❌ ANTHROPIC_API_KEY tidak ditemukan di environment variables"
+        if not api_key or api_key == "sk-ant-YOUR_ACTUAL_KEY_HERE":
+            return "❌ ANTHROPIC_API_KEY tidak ditemukan atau belum diisi"
         
         url = "https://api.anthropic.com/v1/messages"
         headers = {
@@ -267,8 +286,8 @@ class RAGSystem:
 
     def _cohere_generate(self, prompt: str) -> str:
         api_key = os.getenv("COHERE_API_KEY", "")
-        if not api_key:
-            return "❌ COHERE_API_KEY tidak ditemukan di environment variables"
+        if not api_key or api_key == "YOUR_ACTUAL_KEY_HERE":
+            return "❌ COHERE_API_KEY tidak ditemukan atau belum diisi"
         
         url = "https://api.cohere.ai/v1/chat"
         headers = {
@@ -287,6 +306,31 @@ class RAGSystem:
             return resp.json()["text"]
         except Exception as e:
             return f"❌ Cohere error: {str(e)}"
+
+    def _gemini_generate(self, prompt: str) -> str:
+        api_key = os.getenv("GEMINI_API_KEY", "")
+        if not api_key or api_key == "YOUR_ACTUAL_KEY_HERE":
+            return "❌ GEMINI_API_KEY tidak ditemukan atau belum diisi"
+        
+        model = self.model or "gemini-1.5-flash"
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
+        headers = {"Content-Type": "application/json"}
+        payload = {
+            "contents": [{
+                "parts": [{"text": prompt}]
+            }],
+            "generationConfig": {
+                "temperature": 0.7,
+                "maxOutputTokens": 1000
+            }
+        }
+        
+        try:
+            resp = requests.post(url, headers=headers, json=payload, timeout=60)
+            resp.raise_for_status()
+            return resp.json()["candidates"][0]["content"]["parts"][0]["text"]
+        except Exception as e:
+            return f"❌ Gemini error: {str(e)}"
 
     def ask(self, query: str) -> Dict[str, Any]:
         all_results = []
@@ -345,16 +389,38 @@ st.caption("🌐 100% Cloud API - No Localhost Required")
 # Sidebar
 st.sidebar.header("⚙️ Configuration")
 
+# API Keys Status Check
+with st.sidebar.expander("🔑 API Keys Status"):
+    key_checks = {
+        "GROQ_API_KEY": "gsk_YOUR_ACTUAL_KEY_HERE",
+        "GEMINI_API_KEY": "YOUR_ACTUAL_KEY_HERE",
+        "OPENAI_API_KEY": "sk_YOUR_ACTUAL_KEY_HERE",
+        "ANTHROPIC_API_KEY": "sk-ant-YOUR_ACTUAL_KEY_HERE",
+        "COHERE_API_KEY": "YOUR_ACTUAL_KEY_HERE"
+    }
+    
+    for key, default_val in key_checks.items():
+        api_key = os.getenv(key, "")
+        provider_name = key.replace('_API_KEY', '')
+        
+        if api_key and api_key != default_val:
+            st.success(f"✅ {provider_name}")
+        else:
+            st.warning(f"⚠️ {provider_name} not set")
+    
+    st.caption("💡 Edit API keys di baris 15-21 kode")
+
 # API Provider Selection
 provider = st.sidebar.selectbox(
     "🤖 AI Provider",
-    ["groq", "openai", "anthropic", "cohere"],
-    help="Pilih provider AI (pastikan API key sudah diset di environment)"
+    ["groq", "gemini", "openai", "anthropic", "cohere"],
+    help="Pilih provider AI (pastikan API key sudah diisi)"
 )
 
 # Model mapping
 model_map = {
     "groq": ["llama-3.1-70b-versatile", "llama-3.1-8b-instant", "mixtral-8x7b-32768"],
+    "gemini": ["gemini-1.5-flash", "gemini-1.5-pro", "gemini-pro"],
     "openai": ["gpt-4o-mini", "gpt-4o", "gpt-3.5-turbo"],
     "anthropic": ["claude-3-5-sonnet-20241022", "claude-3-haiku-20240307"],
     "cohere": ["command", "command-light"]
@@ -474,5 +540,29 @@ if st.session_state.history:
 
 # Footer
 st.divider()
-st.caption("🔐 Pastikan API keys sudah diset di environment variables (GROQ_API_KEY, OPENAI_API_KEY, dll)")
+st.info("""
+### 🔐 Cara Setup API Keys:
+1. **Edit kode** di baris 15-21 dan ganti dengan API key Anda:
+   ```python
+   API_KEYS = {
+       "GROQ_API_KEY": "gsk_YOUR_ACTUAL_KEY_HERE",
+       "GEMINI_API_KEY": "YOUR_ACTUAL_KEY_HERE",
+       ...
+   }
+   ```
+
+2. **Atau gunakan environment variables:**
+   ```bash
+   export GROQ_API_KEY="gsk_..."
+   export GEMINI_API_KEY="..."
+   export OPENAI_API_KEY="sk-..."
+   ```
+
+3. **Dapatkan API keys gratis:**
+   - 🚀 **Groq**: https://console.groq.com (Recommended - Fast & Free!)
+   - 💎 **Gemini**: https://makersuite.google.com/app/apikey (Google - Free!)
+   - 🤖 OpenAI: https://platform.openai.com
+   - 🧠 Anthropic: https://console.anthropic.com
+   - 📝 Cohere: https://dashboard.cohere.com
+""")
 st.caption("💡 Powered by Multi-Source RAG with Cloud APIs")
