@@ -1,6 +1,6 @@
 # ==========================
 # 🌟 RAG SYSTEM - GEMINI ONLY
-# =========================
+# ==========================
 import os
 import time
 import requests
@@ -11,6 +11,11 @@ import streamlit as st
 from typing import List, Dict, Any
 from sentence_transformers import SentenceTransformer, util
 from duckduckgo_search import DDGS
+
+# ==========================
+# 🎨 Streamlit Page Configuration (MUST BE FIRST STREAMLIT COMMAND)
+# ==========================
+st.set_page_config(page_title="🤖 Gemini RAG Assistant", layout="wide")
 
 # ==========================
 # 🔑 Google Gemini API Key
@@ -198,7 +203,6 @@ JAWABAN:"""
 # ==========================
 # 🎨 Streamlit UI
 # ==========================
-st.set_page_config(page_title="🤖 Gemini RAG Assistant", layout="wide")
 st.title("🤖 Google Gemini RAG Assistant")
 st.caption("✨ Menggabungkan dokumen, web, dan vektor dengan Gemini API")
 
