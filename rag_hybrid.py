@@ -1,14 +1,13 @@
 # ==========================
-# 🌟 RAG SYSTEM - GEMINI ONLY (Updated)
+# 🌟 RAG SYSTEM - GEMINI ONLY (Flexible Mode)
 # ==========================
 import os
-import time
 import requests
 import tempfile
 import uuid
 import numpy as np
 import streamlit as st
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any
 
 # Core dependencies
 import requests
@@ -38,7 +37,7 @@ st.set_page_config(page_title="🤖 Gemini RAG Assistant", layout="wide")
 # ==========================
 # 🔑 Google Gemini API Key
 # ==========================
-# For production, use st.secrets for better security
+# Untuk produksi, gunakan st.secrets untuk keamanan yang lebih baik
 # API_KEY = st.secrets["GEMINI_API_KEY"]
 API_KEY = "AIzaSyCR8xgDIv5oYBaDmMyuGGWjqpFi7U8SGA4"  # Ganti dengan key kamu
 os.environ["GEMINI_API_KEY"] = API_KEY
@@ -52,7 +51,8 @@ def load_embedding_model():
 
 @st.cache_resource
 def load_chroma_client():
-    # Using in-memory database for this demo. For persistence, use a path.
+    # Menggunakan database in-memory. Untuk persistensi, gunakan path.
+    # allow_reset=True memungkinkan kita menghapus koleksi lama.
     return chromadb.Client(Settings(allow_reset=True))
 
 EMBED_MODEL = load_embedding_model()
@@ -60,7 +60,7 @@ CHROMA_CLIENT = load_chroma_client()
 TEXT_SPLITTER = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=150)
 
 # ==========================
-# 📄 Document Loader and Splitter
+# 📄 Fungsi Loader dan Splitter
 # ==========================
 def load_and_split_documents(paths: List[str]) -> List[Dict[str, Any]]:
     docs = []
@@ -93,7 +93,7 @@ def load_and_split_documents(paths: List[str]) -> List[Dict[str, Any]]:
     return docs
 
 # ==========================
-# 🌐 Web Search Retriever (with optional scraping)
+# 🌐 Fungsi Pencarian dan Scraping Web
 # ==========================
 def search_and_scrape_web(query: str, max_results: int, scrape_full_page: bool) -> List[Dict[str, Any]]:
     results = []
@@ -111,12 +111,11 @@ def search_and_scrape_web(query: str, max_results: int, scrape_full_page: bool) 
                     response = requests.get(url, timeout=10)
                     response.raise_for_status()
                     soup = BeautifulSoup(response.content, "lxml")
-                    # Extract text from paragraph tags for cleaner content
                     page_content = "\n".join([p.get_text() for p in soup.find_all('p')])
                     if page_content.strip():
                         content = page_content
                 except Exception as e:
-                    st.warning(f"⚠️ Could not scrape {url}: {e}")
+                    st.warning(f"⚠️ Tidak bisa scrape {url}: {e}")
 
             if content.strip():
                 chunks = TEXT_SPLITTER.split_text(content)
@@ -126,24 +125,24 @@ def search_and_scrape_web(query: str, max_results: int, scrape_full_page: bool) 
                         "metadata": {"title": title, "url": url, "source": "web_search", "chunk": i+1}
                     })
     except Exception as e:
-        st.warning(f"⚠️ Web search error: {str(e)}")
+        st.warning(f"⚠️ Error pencarian web: {str(e)}")
     return results
 
 # ==========================
-# 🧠 Chroma Vector Store
+# 🧠 Kelas Chroma Vector Store
 # ==========================
 class ChromaVectorStore:
     def __init__(self, collection_name: str, embedding_model):
         self.client = CHROMA_CLIENT
         self.embedding_model = embedding_model
-        # Reset collection for a fresh start on each run
+        # Hapus koleksi lama untuk memulai dari awal
         try:
             self.client.delete_collection(name=collection_name)
-        except:
-            pass
+        except Exception:
+            pass # Abaikan jika koleksi tidak ada
         self.collection = self.client.get_or_create_collection(
             name=collection_name,
-            embedding_function=None # We will provide embeddings manually
+            embedding_function=None # Akan berikan embedding manual
         )
 
     def add_documents(self, docs: List[Dict[str, Any]]):
@@ -176,12 +175,12 @@ class ChromaVectorStore:
             retrieved_docs.append({
                 "content": result['documents'][0][i],
                 "metadata": result['metadatas'][0][i],
-                "score": 1 - result['distances'][0][i] # Convert distance to similarity score
+                "score": 1 - result['distances'][0][i] # Ubah jarak ke skor kemiripan
             })
         return retrieved_docs
 
 # ==========================
-# 🤖 Gemini RAG System
+# 🤖 Kelas Gemini RAG System
 # ==========================
 class GeminiRAG:
     def __init__(self, vector_store: ChromaVectorStore, model="gemini-1.5-flash"):
@@ -240,61 +239,76 @@ JAWABAN:"""
 # 🎨 Streamlit UI
 # ==========================
 st.title("🤖 Google Gemini RAG Assistant")
-st.caption("✨ Menggabungkan dokumen, web, dan vektor dengan Gemini API (ChromaDB + LangChain)")
+st.caption("✨ Pilih dan gabungkan sumber data (Dokumen, Web, Scraping) secara fleksibel")
 
-st.sidebar.header("⚙️ Konfigurasi & Sumber Data")
-st.sidebar.success("✅ Gemini API Key aktif")
+st.sidebar.header("⚙️ Konfigurasi Sumber Data")
 
-# --- Data Source Configuration ---
-uploaded_files = st.sidebar.file_uploader("📁 Upload dokumen", type=["pdf", "docx", "pptx", "txt", "md"], accept_multiple_files=True)
+# --- Opsi Sumber Data ---
+use_documents = st.sidebar.checkbox("📄 Gunakan Dokumen", value=True)
+uploaded_files = None
+if use_documents:
+    uploaded_files = st.sidebar.file_uploader(
+        "📁 Upload dokumen", 
+        type=["pdf", "docx", "pptx", "txt", "md"], 
+        accept_multiple_files=True,
+        key="doc_uploader"
+    )
+
 use_web_search = st.sidebar.checkbox("🌐 Gunakan Pencarian Web", value=True)
-scrape_full_page = st.sidebar.checkbox("🕷️ Scraping konten penuh dari halaman web (lebih lambat)", value=True)
+web_query = ""
+if use_web_search:
+    web_query = st.sidebar.text_input("🔎 Masukkan kueri pencarian web:", placeholder="Contoh: tren kecerdasan buatan 2024")
+    scrape_full_page = st.sidebar.checkbox("🕷️ Scraping konten penuh dari halaman web (lebih lambat)", value=True)
 
-# --- Main Logic ---
-if st.button("🚀 Inisialisasi Data & Mulai"):
-    if not uploaded_files and not use_web_search:
-        st.warning("⚠️ Silakan upload dokumen atau aktifkan pencarian web.")
-    else:
-        with st.spinner("📥 Memproses dan memuat data..."):
-            all_docs = []
+st.sidebar.markdown("---")
+
+# --- Tombol Aksi ---
+if st.sidebar.button("🚀 Proses Data & Inisialisasi", type="primary"):
+    all_docs = []
+    
+    # 1. Proses Dokumen
+    if use_documents and uploaded_files:
+        with st.spinner("📥 Memproses dokumen..."):
+            temp_paths = []
+            for uf in uploaded_files:
+                with tempfile.NamedTemporaryFile(delete=False, suffix=f"_{uf.name}") as tmp:
+                    tmp.write(uf.read())
+                    temp_paths.append(tmp.name)
             
-            # 1. Process uploaded documents
-            if uploaded_files:
-                temp_paths = []
-                for uf in uploaded_files:
-                    with tempfile.NamedTemporaryFile(delete=False, suffix=f"_{uf.name}") as tmp:
-                        tmp.write(uf.read())
-                        temp_paths.append(tmp.name)
-                
-                document_chunks = load_and_split_documents(temp_paths)
-                all_docs.extend(document_chunks)
-                st.success(f"✅ Berhasil memuat {len(document_chunks)} potongan dari {len(uploaded_files)} dokumen.")
-                
-                # Clean up temp files
-                for p in temp_paths:
-                    os.remove(p)
+            document_chunks = load_and_split_documents(temp_paths)
+            all_docs.extend(document_chunks)
+            st.success(f"✅ Berhasil memuat {len(document_chunks)} potongan dari {len(uploaded_files)} dokumen.")
+            
+            for p in temp_paths: os.remove(p) # Bersihkan file temp
 
-            # 2. Process web search
-            if use_web_search:
-                # Using a default query for initialization, or you can add a text_input here
-                web_query = "artificial intelligence trends 2024" 
-                web_chunks = search_and_scrape_web(web_query, max_results=3, scrape_full_page=scrape_full_page)
-                all_docs.extend(web_chunks)
-                st.success(f"✅ Berhasil mengambil {len(web_chunks)} potongan dari web untuk query: '{web_query}'")
+    # 2. Proses Pencarian Web
+    if use_web_search and web_query.strip():
+        with st.spinner("🌐 Memproses pencarian web..."):
+            web_chunks = search_and_scrape_web(web_query, max_results=3, scrape_full_page=scrape_full_page)
+            all_docs.extend(web_chunks)
+            st.success(f"✅ Berhasil mengambil {len(web_chunks)} potongan dari web untuk query: '{web_query}'")
 
-            # 3. Initialize Vector Store and add all data
-            if all_docs:
-                vector_store = ChromaVectorStore(collection_name="rag_collection", embedding_model=EMBED_MODEL)
-                vector_store.add_documents(all_docs)
-                st.session_state.vector_store = vector_store
-                st.success("🎉 Semua data telah dimuat ke dalam Vector Store. Anda bisa mulai bertanya!")
-            else:
-                st.error("❌ Tidak ada data yang berhasil dimuat.")
+    # 3. Inisialisasi Vector Store
+    if all_docs:
+        with st.spinner("🧠 Menyimpan data ke Vector Store..."):
+            vector_store = ChromaVectorStore(collection_name="main_collection", embedding_model=EMBED_MODEL)
+            vector_store.add_documents(all_docs)
+            st.session_state.vector_store = vector_store
+            st.session_state.initialized = True
+        st.success("🎉 Sistem RAG berhasil diinisialisasi! Anda bisa mulai bertanya.")
+    else:
+        st.error("❌ Tidak ada data yang berhasil diproses. Silakan periksa konfigurasi Anda.")
 
-# --- Q&A Section ---
-if "vector_store" in st.session_state:
-    st.divider()
-    query = st.text_area("💬 Pertanyaan Anda:", placeholder="Contoh: Apa saja tren AI terkini?")
+if st.sidebar.button("🔄 Reset Sesi"):
+    for key in st.session_state.keys():
+        del st.session_state[key]
+    st.rerun()
+
+# --- Bagian Tanya Jawab ---
+st.divider()
+if st.session_state.get("initialized"):
+    st.header("💬 Ajukan Pertanyaan")
+    query = st.text_area("Masukkan pertanyaan Anda:", placeholder="Contoh: Jelaskan tren AI terkini berdasarkan sumber yang ada.")
     if st.button("🔍 Cari Jawaban"):
         if not query.strip():
             st.warning("⚠️ Masukkan pertanyaan terlebih dahulu.")
@@ -313,6 +327,6 @@ if "vector_store" in st.session_state:
                     st.text_area("Konten:", ctx['content'][:500] + "...", height=150, key=f"source_{i}")
                     st.divider()
 else:
-    st.info("Silakan inisialisasi data terlebih dahulu dengan menekan tombol '🚀 Inisialisasi Data & Mulai' di sidebar.")
+    st.info("Silakan konfigurasikan sumber data di sidebar dan tekan **'Proses Data & Inisialisasi'** untuk memulai.")
 
 st.caption("💡 Powered by Google Gemini + ChromaDB + LangChain")
