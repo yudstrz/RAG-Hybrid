@@ -1,51 +1,27 @@
 # Core dependencies
-streamlit>=1.28.0
-requests>=2.31.0
+streamlit==1.40.0
+requests==2.32.3
 
 # Web search
-duckduckgo-search>=4.0.0
+duckduckgo-search==6.3.5
 
 # Database
-sqlalchemy>=2.0.0
+sqlalchemy==2.0.36
 
-# Document loaders
-langchain>=0.1.0
-pypdf>=3.17.0
-docx2txt>=0.8
-python-pptx>=0.6.21
-unstructured>=0.10.0
-python-magic-bin>=0.4.14  # for Windows
-pillow>=10.0.0
-pillow-heif>=0.13.0
+# Document loaders - SIMPLIFIED
+langchain-community==0.3.12
+pypdf==5.1.0
+docx2txt==0.8
+python-pptx==1.0.2
 
 # Embeddings and vector store
-sentence-transformers>=2.2.0
-chromadb>=0.4.0
-numpy>=1.24.0
+sentence-transformers==3.3.1
+chromadb==0.5.23
+numpy==1.26.4
 
-# Optional: For better document processing
-beautifulsoup4>=4.12.0
-lxml>=4.9.0
-
-# Optional: For transcription (if using Whisper)
-# openai-whisper>=20230314
-# torch>=2.0.0
-
-# Optional: For PDF extraction enhancement
-# pdfminer.six>=20221105
-# pdfplumber>=0.10.0
-
-# Optional: For advanced NLP
-# spacy>=3.7.0
-# transformers>=4.30.0
-
-# Optional: For graph database (if using Neo4j)
-# neo4j>=5.12.0
-# rdflib>=7.0.0
-
-# Optional: For MQTT/IoT
-# paho-mqtt>=1.6.0
-
-# Optional: For advanced data processing
-# pandas>=2.0.0
-# polars>=0.19.0
+# Supporting libraries
+beautifulsoup4==4.12.3
+lxml==5.3.0
+pillow==11.0.0
+typing-extensions==4.12.2
+pydantic==2.10.3
